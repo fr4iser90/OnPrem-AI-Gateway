@@ -13,7 +13,7 @@ from ...data.backends import source_chip_rows, source_names
 from ...data.catalog import list_catalog
 from ...data.db import get_db, hash_password
 from ...data.grants import configured_default_sources
-from ...data.models import WebUser
+from ...data.models import WebUser, ApiKey
 from ..session import require_platform_admin
 from ..shared import (
     templates,
@@ -89,6 +89,17 @@ def users_list(
     key_create_blocked: dict[int, str | None] = {
         u.id: assert_can_create_key(db, u) for u in users
     }
+    user_ids = [u.id for u in users]
+    user_keys: dict[int, list[ApiKey]] = {uid: [] for uid in user_ids}
+    if user_ids and not _teams_on(db):
+        for key in (
+            db.query(ApiKey)
+            .filter(ApiKey.owner_user_id.in_(user_ids))
+            .order_by(ApiKey.created_at.desc())
+            .all()
+        ):
+            if key.owner_user_id is not None:
+                user_keys[key.owner_user_id].append(key)
 
     return templates.TemplateResponse(
         request,
@@ -123,6 +134,7 @@ def users_list(
                 "must_change": sum(1 for u in users if u.must_change_password),
             },
             "active_key_counts": {u.id: active_key_count(db, u.id) for u in users},
+            "user_keys": user_keys,
             "key_create_blocked": key_create_blocked,
             "display_names": {u.id: user_display_name(u) for u in users},
             "needs_username": {u.id: user_needs_username(u) for u in users},

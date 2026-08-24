@@ -54,6 +54,15 @@ from ..shared import (
 router = APIRouter()
 
 
+def _keys_list_url(*, owner_user_id: int | None = None, api_key: ApiKey | None = None) -> str:
+    oid = owner_user_id if owner_user_id is not None else (
+        api_key.owner_user_id if api_key else None
+    )
+    if oid:
+        return f"/keys?owner_user_id={oid}"
+    return "/keys"
+
+
 def _apply_key_routing_from_form(api_key: ApiKey, form, db: Session) -> None:
     from ...data.routing_strategy import normalize_routing_strategy
 
@@ -71,14 +80,26 @@ def keys_list(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[WebUser, Depends(require_user)],
+    owner_user_id: int | None = None,
 ):
-    import os
-
-    from ...config import onprem_api_port, public_api_base
+    from ...config import public_api_base
 
     teams_on = _teams_on(db)
-    q = db.query(ApiKey).options(joinedload(ApiKey.team), joinedload(ApiKey.service_grants))
+    q = db.query(ApiKey).options(
+        joinedload(ApiKey.team),
+        joinedload(ApiKey.service_grants),
+        joinedload(ApiKey.owner),
+    )
     q = scope_keys_query(q, user, teams_enabled=teams_on)
+    filter_owner: WebUser | None = None
+    if owner_user_id is not None:
+        if not user.is_platform_admin and owner_user_id != user.id:
+            raise Forbidden()
+        filter_owner = db.get(WebUser, owner_user_id)
+        if filter_owner is None:
+            request.session["flash_err"] = "User not found."
+            return RedirectResponse("/keys", status_code=303)
+        q = q.filter(ApiKey.owner_user_id == owner_user_id)
     keys = q.order_by(ApiKey.created_at.desc()).all()
     key_ids = [k.id for k in keys]
     day_ago = utcnow() - timedelta(days=1)
@@ -103,15 +124,7 @@ def keys_list(
         )
         last_used = {int(kid): ts for kid, ts in last_rows if kid is not None and ts is not None}
     active_count = sum(1 for k in keys if k.is_active)
-    teams = (
-        (
-            db.query(Team).order_by(Team.name).all()
-            if user.is_platform_admin
-            else user_teams(user)
-        )
-        if teams_on
-        else []
-    )
+    teams, owners = _key_teams_owners(db, user, teams_on)
     return templates.TemplateResponse(
         request,
         "keys.html",
@@ -120,6 +133,9 @@ def keys_list(
             "keys": keys,
             "services": source_names(db),
             "teams": teams,
+            "owners": owners,
+            "filter_owner": filter_owner,
+            "filter_owner_user_id": owner_user_id,
             "flash_key": request.session.pop("flash_key", None),
             "flash_key_services": request.session.pop("flash_key_services", None),
             "flash_ok": request.session.pop("flash_ok", None),
@@ -299,7 +315,7 @@ async def keys_create(
     request.session["flash_key_services"] = (
         ", ".join(services) if services else "all from grant"
     )
-    return RedirectResponse("/keys", status_code=303)
+    return RedirectResponse(_keys_list_url(owner_user_id=owner_user_id), status_code=303)
 
 
 @router.get("/keys/{key_id}", response_class=HTMLResponse)
@@ -434,7 +450,7 @@ async def keys_update(
     )
     db.commit()
     request.session["flash_ok"] = f"Saved {api_key.label}."
-    return RedirectResponse("/keys", status_code=303)
+    return RedirectResponse(_keys_list_url(api_key=api_key), status_code=303)
 
 
 @router.post("/keys/{key_id}/rotate")
@@ -458,7 +474,7 @@ def keys_rotate(
     )
     db.commit()
     request.session["flash_key"] = raw
-    return RedirectResponse("/keys", status_code=303)
+    return RedirectResponse(_keys_list_url(api_key=api_key), status_code=303)
 
 
 @router.post("/keys/{key_id}/revoke")
@@ -478,4 +494,4 @@ def keys_revoke(
             db, actor=user, action="key.revoke", entity_type="api_key", entity_id=api_key.id
         )
         db.commit()
-    return RedirectResponse("/keys", status_code=303)
+    return RedirectResponse(_keys_list_url(api_key=api_key), status_code=303)

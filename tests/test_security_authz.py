@@ -220,6 +220,24 @@ def test_users_page_links_create_key_for_members(sec):
     assert resp.status_code == 200
     assert f'/keys/new?owner_user_id={world.alice_id}' in resp.text
     assert f'/keys/new?owner_user_id={world.bob_id}' in resp.text
+    assert f'/keys?owner_user_id={world.alice_id}' in resp.text
+
+
+def test_keys_list_filter_by_owner(sec):
+    client, world = sec
+    _login(client, BOOTSTRAP_USER, BOOTSTRAP_PASSWORD)
+    resp = client.get(f"/keys?owner_user_id={world.bob_id}", follow_redirects=False)
+    assert resp.status_code == 200
+    assert "Showing keys for" in resp.text
+    assert ">bob<" in resp.text or 'label">bob' in resp.text
+    assert ">alice<" not in resp.text.split("keys-table")[1] if "keys-table" in resp.text else True
+
+
+def test_regular_user_cannot_filter_keys_by_other_owner(sec):
+    client, world = sec
+    _login(client, ALICE_NAME, ALICE_PASSWORD)
+    resp = client.get(f"/keys?owner_user_id={world.bob_id}", follow_redirects=False)
+    assert resp.status_code == 403
 
 
 def test_admin_keys_new_honors_owner_query(sec):

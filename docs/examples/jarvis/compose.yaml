@@ -57,8 +57,9 @@ services:
         "--models-max", "1",
       ]
 
-  # Lab: all other GGUFs, on-demand swap. Shares GPU/RAM with sticky —
-  # only start when you need smart/experiments; stop when done to free GTT.
+  # Lab: all other GGUFs, on-demand swap. Shares GPU/RAM with sticky.
+  # sleep-idle unloads weights+KV after idle (bulk of GTT/RAM); child may keep
+  # a small GPU residual until /models/unload or container stop.
   llama-lab:
     <<: *llama-gpu
     profiles: ["lab"]
@@ -79,6 +80,7 @@ services:
         "--port", "8080",
         "--models-preset", "/etc/llama-cpp/models.ini",
         "--models-max", "1",
+        "--sleep-idle-seconds", "900",
       ]
 
   llama-embeddings:

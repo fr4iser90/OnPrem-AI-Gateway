@@ -212,6 +212,14 @@
           {% endif %}
           <td class="col-manage">
             <div class="actions actions-inline user-manage-actions">
+              {% if not teams_enabled %}
+                {% set nkeys = active_key_counts.get(u.id, 0) %}
+                {% if nkeys %}
+                <a class="badge badge-link" href="/keys?owner_user_id={{ u.id }}" title="View API keys">{{ nkeys }} key{% if nkeys != 1 %}s{% endif %}</a>
+                {% else %}
+                <span class="muted text-sm user-key-count">0 keys</span>
+                {% endif %}
+              {% endif %}
               {% if not teams_enabled and u.is_active %}
                 {% set key_block = key_create_blocked.get(u.id) %}
                 {% if key_block %}
@@ -219,6 +227,32 @@
                 {% else %}
                 <a class="btn-sm" href="/keys/new?owner_user_id={{ u.id }}">Create key</a>
                 {% endif %}
+              {% endif %}
+              {% if not teams_enabled and user_keys.get(u.id) %}
+              <details class="details-edit user-keys-details">
+                <summary class="btn-sm">Keys</summary>
+                <ul class="user-keys-list">
+                {% for k in user_keys[u.id] %}
+                  <li class="user-keys-item">
+                    <span class="mono">{{ k.key_prefix }}</span>
+                    <span class="muted">{{ k.label }}</span>
+                    {% if k.is_active %}<span class="badge ok">active</span>{% else %}<span class="badge off">revoked</span>{% endif %}
+                    <span class="user-keys-actions">
+                      <a class="btn-sm" href="/keys?edit={{ k.id }}">Edit</a>
+                      <form method="post" action="/keys/{{ k.id }}/rotate" class="inline-form">
+                        <button class="btn-sm" type="submit">Rotate</button>
+                      </form>
+                      {% if k.is_active %}
+                      <form method="post" action="/keys/{{ k.id }}/revoke" class="inline-form"
+                            onsubmit="return confirm('Revoke {{ k.label }}?');">
+                        <button class="btn-sm btn-danger" type="submit">Revoke</button>
+                      </form>
+                      {% endif %}
+                    </span>
+                  </li>
+                {% endfor %}
+                </ul>
+              </details>
               {% endif %}
               {% if u.id != user.id %}
               <form method="post" action="/users/{{ u.id }}/toggle">
