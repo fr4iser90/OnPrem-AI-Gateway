@@ -120,8 +120,10 @@ def test_stt_tts_visible_with_kinds_all(tmp_path: Path):
 
     from app.data.catalog import models_list_kinds
 
-    all_kinds = models_list_kinds("all")
-    wide = {m.model_id for m in models_visible_for_key(db, key, kinds=all_kinds)}
+    wide = {
+        m.model_id
+        for m in models_visible_for_key(db, key, kinds=models_list_kinds("all"))
+    }
     assert wide == {"qwen", "stt", "de_DE-thorsten-high"}
 
     audio = {
@@ -131,7 +133,7 @@ def test_stt_tts_visible_with_kinds_all(tmp_path: Path):
     assert audio == {"stt", "de_DE-thorsten-high"}
 
     payload = openai_models_payload(
-        models_visible_for_key(db, key, kinds=all_kinds)
+        models_visible_for_key(db, key, kinds=models_list_kinds("all"))
     )
     by_id = {x["id"]: x for x in payload["data"]}
     assert by_id["stt"]["kind"] == "stt"

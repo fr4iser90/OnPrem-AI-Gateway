@@ -603,9 +603,9 @@ def sync_catalog_from_sources(db: Session) -> dict[str, int]:
 def models_list_kinds(raw: str | None = None) -> frozenset[str]:
     """Parse ``?kinds=`` for GET /v1/models.
 
-    Default (empty): chat + embed (OpenAI-IDE friendly).
-    ``all``: every functional kind (chat, embed, stt, tts).
-    Comma list: intersection with known kinds, e.g. ``stt,tts`` or ``chat,stt,tts``.
+    Default (empty): chat + embed only — STT/TTS stay on /v1/audio/* and are
+    not listed here (avoids polluting IDE model pickers).
+    ``all`` / ``stt,tts``: opt-in to include audio models in the list.
     """
     from ..config import MODEL_CHECK_KINDS
 
@@ -626,8 +626,8 @@ def models_visible_for_key(
 ) -> list[CatalogModel]:
     """Catalog rows the key may see in GET /v1/models.
 
-    Default kinds are chat+embed. Pass ``kinds`` (e.g. from ``?kinds=all``) to
-    also list stt/tts when those sources are granted.
+    Default kinds are chat+embed. Pass ``kinds`` (e.g. ``?kinds=all``) to also
+    list stt/tts when those sources are granted. Inference paths are unchanged.
     """
     from ..auth.check import _models_for_key, _services_for_key
 
