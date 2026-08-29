@@ -112,12 +112,20 @@
                  data-search="{{ (source ~ ' ' ~ m.model_id ~ ' ' ~ (m.tags or '') ~ ' ' ~ (m.short_note or ''))|lower }}">
             <input type="checkbox" name="{{ input_name }}" value="{{ mid }}" {% if mid in selected %}checked{% endif %}>
             <span class="model-picker-label">
-              <span class="mono model-picker-id">{{ m.model_id }}</span>
+              <span class="model-picker-id-row">
+                <span class="mono model-picker-id">{{ m.model_id }}</span>
+                {% if m.tags and 'alias' in (m.tags or '') %}
+                <span class="model-picker-vl-badge">alias</span>
+                {% endif %}
+              </span>
               <span class="model-picker-sub muted">
+                {%- if m.short_note and m.tags and 'alias' in (m.tags or '') %}{{ m.short_note }}
+                {%- else -%}
                 {%- if m.ctx_size %}ctx {{ m.ctx_size }}{% endif -%}
                 {%- if m.n_ctx_train %}{% if m.ctx_size %} · {% endif %}train {{ m.n_ctx_train }}{% endif -%}
                 {%- if m.n_embd %}{% if m.ctx_size or m.n_ctx_train %} · {% endif %}dim {{ m.n_embd }}{% endif -%}
                 {%- if m.tags %}{% if m.ctx_size or m.n_ctx_train or m.n_embd %} · {% endif %}{{ m.tags }}{% endif -%}
+                {%- endif -%}
               </span>
             </span>
           </label>

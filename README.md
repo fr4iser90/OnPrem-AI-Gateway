@@ -145,7 +145,7 @@ Same product; only how you reach it changes. See `.env.example` for cookie/HTTPS
 
 | Path | Purpose |
 |------|---------|
-| `GET /v1/models` | Models this key may see (enabled ∩ grant) |
+| `GET /v1/models` | Models this key may see (enabled ∩ grant). Default: chat+embed. `?kinds=all` or `?kinds=stt,tts` to include audio (and other kinds) |
 | `/v1/chat/completions` (and related chat paths) | Chat — routed by `model` |
 | `/v1/embeddings` | Embeddings — routed by `model` |
 | `/v1/audio/transcriptions` | Speech → text (STT) |

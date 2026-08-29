@@ -158,7 +158,13 @@ def _selected_model_keys(rows: list[ModelAllowlist]) -> set[str]:
 def _catalog_for_allowlist(
     db: Session, selected: set[str]
 ) -> list[tuple[str, list[CatalogModel]]]:
-    """Enabled catalog rows grouped by source; orphans from allowlist appended."""
+    """Enabled catalog rows grouped by source; orphans from allowlist appended.
+
+    Public aliases are injected under their preferred source (or ``chat``) so
+    grants store ``chat:qwen3.6`` and authorize matches via alias rewrite.
+    """
+    from ..model_aliases import list_aliases
+
     by_source: dict[str, list[CatalogModel]] = {}
     seen: set[str] = set()
     for row in list_catalog(db):
@@ -166,6 +172,30 @@ def _catalog_for_allowlist(
             continue
         by_source.setdefault(row.source_name, []).append(row)
         seen.add(f"{row.source_name}:{row.model_id}")
+
+    # Aliases first within each source group.
+    alias_inject: dict[str, list[CatalogModel]] = {}
+    for a in list_aliases(db, enabled_only=True):
+        svc = (a.preferred_source or "").strip() or "chat"
+        key = f"{svc}:{a.alias_id}"
+        alias_inject.setdefault(svc, []).append(
+            CatalogModel(
+                source_name=svc,
+                kind=a.kind or "chat",
+                model_id=a.alias_id,
+                enabled=True,
+                short_note=(
+                    (a.description or "").strip()
+                    or f"alias → {a.target_model_id}"
+                )[:512],
+                tags="alias",
+            )
+        )
+        seen.add(key)
+
+    for svc, rows in alias_inject.items():
+        by_source[svc] = rows + by_source.get(svc, [])
+
     for key in sorted(selected - seen):
         if ":" not in key:
             continue

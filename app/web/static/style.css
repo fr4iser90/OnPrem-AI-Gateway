@@ -2359,6 +2359,84 @@ textarea { min-height: 110px; font-family: var(--mono); font-size: 0.85rem; }
 .svc-dialect {
   font-size: 0.85rem;
 }
+
+/* Public alias slots (Models page) */
+.alias-card {
+  margin-bottom: 0.85rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+.panel.alias-card,
+.panel.panel--nested.alias-card {
+  box-shadow: none;
+}
+.alias-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem 1rem;
+  margin-bottom: 0.75rem;
+}
+.alias-card-id {
+  font-weight: 600;
+  font-size: 1.05rem;
+  margin-right: auto;
+}
+.alias-card-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  color: var(--text);
+  white-space: nowrap;
+}
+.alias-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 0.65rem 0.85rem;
+}
+.alias-card-grid .field--wide {
+  grid-column: 1 / -1;
+}
+.alias-card-grid .field label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-bottom: 0.2rem;
+}
+.alias-card-grid textarea.mono {
+  width: 100%;
+  min-height: 4.5rem;
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+.alias-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem;
+  margin-top: 0.65rem;
+}
+.alias-add {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+.alias-add-flags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.1rem;
+  margin-top: 0.75rem;
+}
+.alias-add-flags label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+}
 .svc-dialect select {
   max-width: 12rem;
 }

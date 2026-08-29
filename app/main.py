@@ -297,6 +297,7 @@ def create_app() -> FastAPI:
         """OpenAI-compatible model list (public path /v1/models; nginx → /v1/onprem/models)."""
         from .data.catalog import (
             load_api_key,
+            models_list_kinds,
             models_visible_for_key,
             openai_models_payload,
         )
@@ -311,9 +312,69 @@ def create_app() -> FastAPI:
             return JSONResponse({"error": "unauthorized"}, status_code=401)
         if api_key.expires_at and api_key.expires_at < utcnow():
             return JSONResponse({"error": "expired_api_key"}, status_code=401)
-        rows = models_visible_for_key(db, api_key)
-        payload = openai_models_payload(rows)
-        aliases = auto_alias_list_entries(get_auth_settings(db)) + alias_list_entries(db)
+        rows = models_visible_for_key(
+            db,
+            api_key,
+            kinds=models_list_kinds(request.query_params.get("kinds")),
+        )
+        from .auth.check import _models_for_key, _services_for_key
+        from .data.source_capacity import capacities_by_source
+        from .model_aliases import hidden_catalog_ids, list_aliases
+
+        allowed_sources = _services_for_key(api_key, db)
+        # Model allowlists are per-source; for alias visibility we union chat-like
+        # grants. Unrestricted (None) on any granted chat source → show all aliases.
+        allow_union: set[str] | None = None
+        restricted = False
+        for src in allowed_sources:
+            mset = _models_for_key(api_key, src, db)
+            if mset is None:
+                allow_union = None
+                restricted = False
+                break
+            restricted = True
+            allow_union = (allow_union or set()) | set(mset)
+        if not restricted:
+            allow_union = None
+
+        # Probe unique sources for slot capacity (cached ~3s).
+        slot_sources: set[str] = {r.source_name for r in rows}
+        from .data.models import CatalogModel
+
+        for a in list_aliases(db, enabled_only=True):
+            pref = (a.preferred_source or "").strip()
+            if pref:
+                slot_sources.add(pref)
+                continue
+            target = (a.target_model_id or "").strip()
+            if not target:
+                continue
+            cat = (
+                db.query(CatalogModel)
+                .filter(
+                    CatalogModel.model_id == target,
+                    CatalogModel.enabled.is_(True),
+                )
+                .first()
+            )
+            if cat is not None:
+                slot_sources.add(cat.source_name)
+        capacity = capacities_by_source(db, slot_sources, probe=True)
+
+        payload = openai_models_payload(rows, capacity_by_source=capacity)
+        hidden = hidden_catalog_ids(db)
+        if hidden:
+            payload["data"] = [
+                x
+                for x in (payload.get("data") or [])
+                if x.get("id") not in hidden
+            ]
+        aliases = auto_alias_list_entries(get_auth_settings(db)) + alias_list_entries(
+            db,
+            allow=allow_union,
+            allowed_sources=allowed_sources if allowed_sources else None,
+            capacity_by_source=capacity,
+        )
         if aliases:
             seen = {x.get("id") for x in payload.get("data") or []}
             extra = [a for a in aliases if a["id"] not in seen]

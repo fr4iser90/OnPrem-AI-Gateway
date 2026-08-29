@@ -79,3 +79,61 @@ def test_allowlist_intersects_catalog(tmp_path: Path):
 
     visible = models_visible_for_key(db, key)
     assert [m.model_id for m in visible] == ["beta"]
+
+
+def test_models_list_kinds_parse():
+    from app.data.catalog import models_list_kinds
+
+    assert models_list_kinds(None) == frozenset({"chat", "embed"})
+    assert models_list_kinds("") == frozenset({"chat", "embed"})
+    assert models_list_kinds("all") == frozenset({"chat", "embed", "stt", "tts"})
+    assert models_list_kinds("stt,tts") == frozenset({"stt", "tts"})
+    assert models_list_kinds("chat,stt,nope") == frozenset({"chat", "stt"})
+
+
+def test_stt_tts_visible_with_kinds_all(tmp_path: Path):
+    db = _session(tmp_path)
+    upsert_source(db, name="chat", kind="chat", address="127.0.0.1:1")
+    upsert_source(db, name="stt", kind="stt", address="127.0.0.1:2")
+    upsert_source(db, name="tts", kind="tts", address="127.0.0.1:3")
+    db.add(CatalogModel(source_name="chat", kind="chat", model_id="qwen", enabled=True))
+    db.add(CatalogModel(source_name="stt", kind="stt", model_id="stt", enabled=True))
+    db.add(
+        CatalogModel(
+            source_name="tts", kind="tts", model_id="de_DE-thorsten-high", enabled=True
+        )
+    )
+    key = ApiKey(
+        label="discord",
+        key_hash=hash_api_key("gw_discord"),
+        key_prefix="gw_d",
+        is_active=True,
+    )
+    db.add(key)
+    db.flush()
+    for svc in ("chat", "stt", "tts"):
+        db.add(ServiceGrant(api_key_id=key.id, service=svc))
+    db.commit()
+
+    default = {m.model_id for m in models_visible_for_key(db, key)}
+    assert default == {"qwen"}
+
+    from app.data.catalog import models_list_kinds
+
+    all_kinds = models_list_kinds("all")
+    wide = {m.model_id for m in models_visible_for_key(db, key, kinds=all_kinds)}
+    assert wide == {"qwen", "stt", "de_DE-thorsten-high"}
+
+    audio = {
+        m.model_id
+        for m in models_visible_for_key(db, key, kinds=models_list_kinds("stt,tts"))
+    }
+    assert audio == {"stt", "de_DE-thorsten-high"}
+
+    payload = openai_models_payload(
+        models_visible_for_key(db, key, kinds=all_kinds)
+    )
+    by_id = {x["id"]: x for x in payload["data"]}
+    assert by_id["stt"]["kind"] == "stt"
+    assert by_id["de_DE-thorsten-high"]["kind"] == "tts"
+    assert by_id["qwen"]["kind"] == "chat"

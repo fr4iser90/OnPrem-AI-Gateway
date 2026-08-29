@@ -189,6 +189,8 @@ def catalog_groups_for_ceiling(
     db: Session, ceil: AccessCeiling, *, kinds: set[str] | None = None
 ) -> list[tuple[str, list[CatalogModel]]]:
     """Enabled catalog rows visible under a grant (for key/grant UIs)."""
+    from ..model_aliases import list_aliases
+
     kinds = kinds or set(MODEL_CHECK_KINDS)
     allowed_sources = set(services_for_ceiling(db, ceil))
     by_source: dict[str, list[CatalogModel]] = {}
@@ -203,6 +205,36 @@ def catalog_groups_for_ceiling(
         if allowed is not None and row.model_id not in allowed:
             continue
         by_source.setdefault(row.source_name, []).append(row)
+
+    alias_inject: dict[str, list[CatalogModel]] = {}
+    for a in list_aliases(db, enabled_only=True):
+        if (a.kind or "chat") not in kinds:
+            continue
+        svc = (a.preferred_source or "").strip() or "chat"
+        if svc not in allowed_sources:
+            continue
+        if not ceil.unrestricted:
+            allowed = ceil.models_for(svc)
+            target = (a.target_model_id or "").strip()
+            if allowed is not None and a.alias_id not in allowed and target not in allowed:
+                continue
+        alias_inject.setdefault(svc, []).append(
+            CatalogModel(
+                source_name=svc,
+                kind=a.kind or "chat",
+                model_id=a.alias_id,
+                enabled=True,
+                short_note=(
+                    (a.description or "").strip()
+                    or f"alias → {a.target_model_id}"
+                )[:512],
+                tags="alias",
+            )
+        )
+
+    for svc, rows in alias_inject.items():
+        by_source[svc] = rows + by_source.get(svc, [])
+
     return sorted(by_source.items(), key=lambda x: x[0])
 
 

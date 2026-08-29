@@ -177,6 +177,16 @@ def _ensure_columns(eng) -> None:
             ("usage_weight", "FLOAT DEFAULT 1.0"),
             ("disabled_by", "VARCHAR(16) DEFAULT ''"),
         ],
+        "model_aliases": [
+            ("hide_candidates", "BOOLEAN DEFAULT 1"),
+            ("family_prefix", "VARCHAR(128) DEFAULT ''"),
+            ("kind", "VARCHAR(16) DEFAULT 'chat'"),
+            ("sort_order", "INTEGER DEFAULT 0"),
+            ("show_backend", "BOOLEAN DEFAULT 1"),
+            ("enabled", "BOOLEAN DEFAULT 1"),
+            ("description", "VARCHAR(512) DEFAULT ''"),
+            ("preferred_source", "VARCHAR(64) DEFAULT ''"),
+        ],
     }
     insp = inspect(eng)
     with eng.begin() as conn:

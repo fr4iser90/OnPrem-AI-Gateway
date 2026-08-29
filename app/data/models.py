@@ -378,7 +378,7 @@ class BackendSource(Base):
 
 
 class ModelAlias(Base):
-    """Public model id → real catalog id (+ optional source pin)."""
+    """Public model id → real catalog id (+ optional source pin + candidate pool)."""
 
     __tablename__ = "model_aliases"
     __table_args__ = (UniqueConstraint("alias_id", name="uq_model_alias_id"),)
@@ -392,7 +392,35 @@ class ModelAlias(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     kind: Mapped[str] = mapped_column(String(16), default="chat")
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    # Hide target + candidates from GET /v1/models (clients see the alias only).
+    hide_candidates: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Optional prefix for family suggest, e.g. "Qwen3.6" → all Qwen3.6-* models.
+    family_prefix: Mapped[str] = mapped_column(String(128), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    candidates: Mapped[list[ModelAliasCandidate]] = relationship(
+        back_populates="alias",
+        cascade="all, delete-orphan",
+        order_by="ModelAliasCandidate.sort_order, ModelAliasCandidate.model_id",
+    )
+
+
+class ModelAliasCandidate(Base):
+    """Swap pool for one public alias (admin picks active via ModelAlias.target_model_id)."""
+
+    __tablename__ = "model_alias_candidates"
+    __table_args__ = (
+        UniqueConstraint("alias_row_id", "model_id", name="uq_alias_candidate"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    alias_row_id: Mapped[int] = mapped_column(
+        ForeignKey("model_aliases.id", ondelete="CASCADE"), index=True
+    )
+    model_id: Mapped[str] = mapped_column(String(256), index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    alias: Mapped[ModelAlias] = relationship(back_populates="candidates")
 
 
 class CatalogModel(Base):

@@ -15,6 +15,17 @@ from ..shared import templates, _gpu_power_enabled
 router = APIRouter()
 
 
+def _parse_candidate_lines(raw: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in (raw or "").replace(",", "\n").splitlines():
+        mid = line.strip()
+        if mid and mid not in seen:
+            seen.add(mid)
+            out.append(mid)
+    return out
+
+
 @router.get("/models", response_class=HTMLResponse)
 def models_page(
     request: Request,
@@ -31,6 +42,11 @@ def models_page(
         suggest_docs_url,
     )
     from ...data.usage_weights import catalog_weight_suggestions
+    from ...model_aliases import (
+        candidate_model_ids,
+        catalog_ids_for_picker,
+        list_aliases,
+    )
     from ...stats import model_perf_averages, model_perf_by_id
     from ...vision_route import group_kind_rows_vl_pairs
     from ..accounts import get_auth_settings
@@ -52,7 +68,24 @@ def models_page(
         active, stale = split_sync_stale_pairs(pairs)
         groups.append((kind, active, stale, len(kind_rows)))
     from ...data.backends import list_sources
-    from ...model_aliases import list_aliases
+
+    aliases = list_aliases(db)
+    catalog_model_ids = catalog_ids_for_picker(db)
+    alias_candidates: dict[int, list[str]] = {}
+    alias_target_options: dict[int, list[str]] = {}
+    for a in aliases:
+        cands = candidate_model_ids(a)
+        alias_candidates[a.id] = cands
+        # Dropdown: candidates first, then other catalog ids (admin can promote new active).
+        seen: set[str] = set()
+        opts: list[str] = []
+        for mid in cands + catalog_model_ids:
+            if mid and mid not in seen:
+                seen.add(mid)
+                opts.append(mid)
+        if a.target_model_id and a.target_model_id not in seen:
+            opts.insert(0, a.target_model_id)
+        alias_target_options[a.id] = opts
 
     return templates.TemplateResponse(
         request,
@@ -70,7 +103,10 @@ def models_page(
             "format_param_count": format_param_count,
             "format_bytes": format_bytes,
             "tag_suggestions": TAG_SUGGESTIONS,
-            "aliases": list_aliases(db),
+            "aliases": aliases,
+            "alias_candidates": alias_candidates,
+            "alias_target_options": alias_target_options,
+            "catalog_model_ids": catalog_model_ids,
             "source_names": [s.name for s in list_sources(db)],
             "flash_ok": flash_ok,
             "flash_err": flash_err,
@@ -201,7 +237,11 @@ def models_alias_add(
     target_model_id: str = Form(""),
     preferred_source: str = Form(""),
     description: str = Form(""),
+    family_prefix: str = Form(""),
     show_backend: str | None = Form(None),
+    hide_candidates: str | None = Form(None),
+    suggest_family: str | None = Form(None),
+    sort_order: str = Form("0"),
 ):
     from ...model_aliases import upsert_alias, validate_alias_id
 
@@ -210,6 +250,10 @@ def models_alias_add(
             "Invalid alias id (lowercase a-z0-9._-, not auto/auto-quality/auto-long)."
         )
         return RedirectResponse("/models", status_code=303)
+    try:
+        order = int(sort_order or 0)
+    except (TypeError, ValueError):
+        order = 0
     row = upsert_alias(
         db,
         alias_id=alias_id,
@@ -217,7 +261,11 @@ def models_alias_add(
         preferred_source=preferred_source,
         description=description,
         show_backend=show_backend is not None,
+        hide_candidates=hide_candidates is not None,
+        family_prefix=family_prefix,
+        suggest_family=suggest_family is not None,
         enabled=True,
+        sort_order=order,
     )
     if row is None:
         request.session["flash_err"] = "Alias needs a target model id."
@@ -231,7 +279,11 @@ def models_alias_add(
         detail=f"{row.alias_id}→{row.target_model_id}",
     )
     db.commit()
-    request.session["flash_ok"] = f"Alias '{row.alias_id}' added."
+    n = len(row.candidates or [])
+    request.session["flash_ok"] = (
+        f"Alias '{row.alias_id}' added"
+        + (f" ({n} candidates)." if n else ".")
+    )
     return RedirectResponse("/models", status_code=303)
 
 
@@ -241,7 +293,7 @@ async def models_alias_save(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[WebUser, Depends(require_platform_admin)],
 ):
-    from ...model_aliases import list_aliases
+    from ...model_aliases import list_aliases, set_candidates
 
     form = await request.form()
     for row in list_aliases(db):
@@ -251,8 +303,16 @@ async def models_alias_save(
         row.target_model_id = target[:256]
         row.preferred_source = str(form.get(f"source_{row.id}") or "").strip().lower()[:64]
         row.description = str(form.get(f"desc_{row.id}") or "").strip()[:512]
+        row.family_prefix = str(form.get(f"family_{row.id}") or "").strip()[:128]
         row.show_backend = f"show_{row.id}" in form
         row.enabled = f"enabled_{row.id}" in form
+        row.hide_candidates = f"hide_{row.id}" in form
+        try:
+            row.sort_order = int(form.get(f"sort_{row.id}") or 0)
+        except (TypeError, ValueError):
+            row.sort_order = 0
+        cands = _parse_candidate_lines(str(form.get(f"candidates_{row.id}") or ""))
+        set_candidates(db, row, cands, ensure_target=True)
     write_audit(
         db,
         actor=user,
@@ -262,6 +322,42 @@ async def models_alias_save(
     )
     db.commit()
     request.session["flash_ok"] = "Aliases saved."
+    return RedirectResponse("/models", status_code=303)
+
+
+@router.post("/models/aliases/suggest")
+def models_alias_suggest(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[WebUser, Depends(require_platform_admin)],
+    alias_row_id: str = Form(""),
+):
+    from ...data.models import ModelAlias
+    from ...model_aliases import suggest_and_set_candidates
+
+    try:
+        aid = int(alias_row_id)
+    except (TypeError, ValueError):
+        request.session["flash_err"] = "Bad alias id."
+        return RedirectResponse("/models", status_code=303)
+    row = db.get(ModelAlias, aid)
+    if row is None:
+        request.session["flash_err"] = "Alias not found."
+        return RedirectResponse("/models", status_code=303)
+    matches = suggest_and_set_candidates(db, row)
+    write_audit(
+        db,
+        actor=user,
+        action="alias.suggest_family",
+        entity_type="model_alias",
+        entity_id=row.id,
+        detail=f"{row.alias_id} family={row.family_prefix} n={len(matches)}",
+    )
+    db.commit()
+    request.session["flash_ok"] = (
+        f"Suggested {len(matches)} candidate(s) for '{row.alias_id}' "
+        f"(prefix {row.family_prefix or '—'})."
+    )
     return RedirectResponse("/models", status_code=303)
 
 

@@ -410,7 +410,12 @@ def authorize(
         if model:
             allow = _models_for_key(api_key, service, db)
             if allow is not None and model not in allow:
-                return _fail(403, "model_not_allowed", api_key)
+                from ..model_aliases import model_allowed_via_alias
+
+                # Allowlist may name the public alias (qwen3.6); request is rewritten
+                # to the active target before authorize — treat that as a match.
+                if not model_allowed_via_alias(db, allow, model):
+                    return _fail(403, "model_not_allowed", api_key)
             from ..data.catalog import is_model_globally_enabled
 
             if not is_model_globally_enabled(db, service, model):

@@ -119,6 +119,17 @@ class SourceAdmissionGate:
                 gate.inflight += 1
                 next_waiter.event.set()
 
+    def snapshot(self, source_key: str) -> tuple[int | None, int | None]:
+        """Return (inflight, limit) for this upstream address, or (None, None)."""
+        key = (source_key or "").strip()
+        if not key:
+            return None, None
+        with self._lock:
+            gate = self._gates.get(key)
+            if gate is None:
+                return None, None
+            return gate.inflight, gate.limit
+
 
 source_admission_gate = SourceAdmissionGate()
 

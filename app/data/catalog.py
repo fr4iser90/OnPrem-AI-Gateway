@@ -600,15 +600,46 @@ def sync_catalog_from_sources(db: Session) -> dict[str, int]:
     }
 
 
-def models_visible_for_key(db: Session, api_key: ApiKey) -> list[CatalogModel]:
-    """Catalog rows the key may see in GET /v1/models (chat/embed only)."""
+def models_list_kinds(raw: str | None = None) -> frozenset[str]:
+    """Parse ``?kinds=`` for GET /v1/models.
+
+    Default (empty): chat + embed (OpenAI-IDE friendly).
+    ``all``: every functional kind (chat, embed, stt, tts).
+    Comma list: intersection with known kinds, e.g. ``stt,tts`` or ``chat,stt,tts``.
+    """
+    from ..config import MODEL_CHECK_KINDS
+
+    text = (raw or "").strip().lower()
+    if not text:
+        return frozenset({"chat", "embed"})
+    if text in {"all", "*"}:
+        return frozenset(MODEL_CHECK_KINDS)
+    wanted = {p.strip() for p in text.replace(";", ",").split(",") if p.strip()}
+    return frozenset(wanted & set(MODEL_CHECK_KINDS)) or frozenset({"chat", "embed"})
+
+
+def models_visible_for_key(
+    db: Session,
+    api_key: ApiKey,
+    *,
+    kinds: frozenset[str] | set[str] | None = None,
+) -> list[CatalogModel]:
+    """Catalog rows the key may see in GET /v1/models.
+
+    Default kinds are chat+embed. Pass ``kinds`` (e.g. from ``?kinds=all``) to
+    also list stt/tts when those sources are granted.
+    """
     from ..auth.check import _models_for_key, _services_for_key
+
+    kind_set = frozenset(kinds) if kinds is not None else frozenset({"chat", "embed"})
+    if not kind_set:
+        kind_set = frozenset({"chat", "embed"})
 
     allowed_sources = _services_for_key(api_key, db)
     rows = list_catalog(db)
     out: list[CatalogModel] = []
     for row in rows:
-        if row.kind not in ("chat", "embed"):
+        if row.kind not in kind_set:
             continue
         if not row.enabled:
             continue
@@ -637,8 +668,13 @@ def context_length_for_model(row: CatalogModel) -> int | None:
     return None
 
 
-def openai_models_payload(rows: list[CatalogModel]) -> dict:
+def openai_models_payload(
+    rows: list[CatalogModel],
+    *,
+    capacity_by_source: dict | None = None,
+) -> dict:
     """OpenAI-compatible list sorted by catalog order."""
+    from .source_capacity import SourceCapacity, attach_capacity
 
     data = []
     seen: set[str] = set()
@@ -651,6 +687,7 @@ def openai_models_payload(rows: list[CatalogModel]) -> dict:
             "object": "model",
             "owned_by": row.source_name,
             "created": int((row.created_at or utcnow()).timestamp()),
+            "kind": row.kind,
         }
         if (row.short_note or "").strip():
             entry["description"] = row.short_note
@@ -677,6 +714,10 @@ def openai_models_payload(rows: list[CatalogModel]) -> dict:
         arch = architecture_for_openai_payload(row)
         if arch:
             entry["architecture"] = arch
+        if capacity_by_source:
+            cap = capacity_by_source.get(row.source_name)
+            if isinstance(cap, SourceCapacity):
+                attach_capacity(entry, cap)
         data.append(entry)
     return {"object": "list", "data": data}
 
