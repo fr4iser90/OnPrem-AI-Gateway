@@ -45,6 +45,7 @@ def dashboard(
     from ...data.backends import hardware_labels
     from ...auth.source_admission import live_admission_rows
     from ...data.source_capacity import format_slots_label
+    from ...stats import enrich_energy_with_owners, energy_by_owner
 
     zone = zone_from_request(request, user)
     now = utcnow()
@@ -76,6 +77,8 @@ def dashboard(
     else:
         pulse_status = "Healthy"
     live_slots = live_admission_rows(db)
+    energy_keys = enrich_energy_with_owners(db, list(week["energy_by_key"]))
+    energy_owners = energy_by_owner(energy_keys)
 
     return templates.TemplateResponse(
         request,
@@ -92,7 +95,8 @@ def dashboard(
             "tokens_in": day["tokens_in"],
             "watt_hours_day": day["watt_hours"],
             "watt_hours_week": week["watt_hours"],
-            "energy_by_key": week["energy_by_key"],
+            "energy_by_key": energy_keys,
+            "energy_by_owner": energy_owners,
             "latency_p95": day["latency_p95"],
             "chart_service": bar_chart_svg(day["by_service"], unit="requests"),
             "chart_model": bar_chart_svg([(m, c) for m, c in day["by_model"]], unit="requests"),

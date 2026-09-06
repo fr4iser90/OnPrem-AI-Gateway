@@ -67,6 +67,7 @@
         <th>Services</th>
         <th>Last used</th>
         <th>24h</th>
+        {% if gpu_power_enabled %}<th title="Approximate GPU Wh · 7d">Wh · 7d</th>{% endif %}
         <th>Limits</th>
         <th>Priority</th>
         <th>Status</th>
@@ -95,6 +96,9 @@
         </td>
         <td class="mono">{% if last_used.get(k.id) %}{{ last_used.get(k.id) }}{% else %}—{% endif %}</td>
         <td class="mono">{{ usage_24h.get(k.id, 0) }}</td>
+        {% if gpu_power_enabled %}
+        <td class="mono num" title="Approximate GPU energy for this key">{% if energy_7d.get(k.id) %}{{ '%.2f'|format(energy_7d.get(k.id)) }}{% else %}—{% endif %}</td>
+        {% endif %}
         <td class="mono">
           rpm={{ k.rpm_limit if k.rpm_limit is not none else '∅' }}
           / conc={{ k.concurrency_limit if k.concurrency_limit is not none else '∅' }}
@@ -117,7 +121,7 @@
         </td>
       </tr>
     {% else %}
-      <tr><td colspan="{{ 9 + (1 if teams_enabled else 0) + (1 if is_admin and not teams_enabled else 0) }}">
+      <tr><td colspan="{{ 9 + (1 if teams_enabled else 0) + (1 if is_admin and not teams_enabled else 0) + (1 if gpu_power_enabled else 0) }}">
         <div class="empty-state">
           <p class="empty-state-title">No API keys yet</p>
           <p class="empty-state-text">Create a key for OpenAI-compatible clients (VS Code, curl, apps).</p>

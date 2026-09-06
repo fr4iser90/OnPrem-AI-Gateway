@@ -105,6 +105,17 @@ def keys_list(
             return RedirectResponse("/keys", status_code=303)
         q = q.filter(ApiKey.owner_user_id == owner_user_id)
     keys = q.order_by(ApiKey.created_at.desc()).all()
+    # All-owners admin view: group by owner so identical labels (e.g. main) stay distinct.
+    if user.is_platform_admin and owner_user_id is None and not teams_on:
+        from ..accounts import user_display_name
+
+        keys.sort(
+            key=lambda k: (
+                (user_display_name(k.owner) if k.owner else "").lower(),
+                (k.label or "").lower(),
+                -(k.created_at.timestamp() if k.created_at else 0),
+            )
+        )
     key_ids = [k.id for k in keys]
     day_ago = utcnow() - timedelta(days=1)
     usage_24h: dict[int, int] = {}
@@ -127,6 +138,11 @@ def keys_list(
             .all()
         )
         last_used = {int(kid): ts for kid, ts in last_rows if kid is not None and ts is not None}
+    from ...stats import energy_wh_by_key_ids
+    from ..shared import _gpu_power_enabled
+
+    energy_7d = energy_wh_by_key_ids(db, key_ids, lookback_days=7) if key_ids else {}
+    gpu_on = _gpu_power_enabled(request, db)
     active_count = sum(1 for k in keys if k.is_active)
     teams, owners = _key_teams_owners(db, user, teams_on)
     return templates.TemplateResponse(
@@ -148,6 +164,8 @@ def keys_list(
             "active_count": active_count,
             "usage_24h": usage_24h,
             "last_used": last_used,
+            "energy_7d": energy_7d,
+            "gpu_power_enabled": gpu_on,
             "source_tips": _source_tips(db),
             "nav": "keys",
             "is_admin": user.is_platform_admin,

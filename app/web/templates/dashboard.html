@@ -27,14 +27,19 @@
       <div class="pulse-kpi-value">{% if watt_hours_week %}{{ '%.2f'|format(watt_hours_week) }}<span class="unit">Wh</span>{% else %}—{% endif %}</div>
     </div>
   </div>
-  {% if energy_by_key %}
+  {% if energy_by_owner %}
   <div class="table-wrap mt-half">
     <table class="table-compact">
-      <thead><tr><th>Key</th><th>OK · 7d</th><th>avg W</th><th>Wh · 7d</th></tr></thead>
+      <thead><tr><th>Owner</th><th>Keys</th><th>OK · 7d</th><th>avg W</th><th>Wh · 7d</th></tr></thead>
       <tbody>
-      {% for r in energy_by_key[:12] %}
+      {% for r in energy_by_owner[:12] %}
         <tr>
-          <td class="mono">{{ r.key_label }}</td>
+          <td>
+            {% if r.owner_user_id %}
+            <a href="/keys?owner_user_id={{ r.owner_user_id }}">{{ r.owner_name }}</a>
+            {% else %}{{ r.owner_name }}{% endif %}
+          </td>
+          <td class="num">{{ r.keys }}</td>
           <td class="num">{{ r.ok_count }}</td>
           <td class="num">{% if r.watts_avg %}{{ '%.0f'|format(r.watts_avg) }}{% else %}—{% endif %}</td>
           <td class="num"><strong>{{ '%.3f'|format(r.watt_hours) }}</strong></td>
@@ -43,7 +48,23 @@
       </tbody>
     </table>
   </div>
-  <p class="muted text-sm mt-half"><a href="/usage#energy-by-key">Full energy table on Usage</a></p>
+  <p class="muted text-sm mt-half"><a href="/usage#energy-by-owner">Full energy tables on Usage</a> · <a href="/keys">Keys with Wh · 7d</a></p>
+  {% elif energy_by_key %}
+  <div class="table-wrap mt-half">
+    <table class="table-compact">
+      <thead><tr><th>Owner</th><th>Key</th><th>OK · 7d</th><th>Wh · 7d</th></tr></thead>
+      <tbody>
+      {% for r in energy_by_key[:12] %}
+        <tr>
+          <td>{{ r.owner_name or '—' }}</td>
+          <td class="mono">{{ r.key_label }}</td>
+          <td class="num">{{ r.ok_count }}</td>
+          <td class="num"><strong>{{ '%.3f'|format(r.watt_hours) }}</strong></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
   {% else %}
   <p class="muted">No Wh samples yet — needs GPU sidecar on source hosts and chat via gateway entry.</p>
   {% endif %}

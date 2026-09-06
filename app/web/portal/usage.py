@@ -31,6 +31,8 @@ def usage_page(
     from ...data.models import UsageDaily
     from ...stats import (
         daily_traffic_chart_svg,
+        enrich_energy_with_owners,
+        energy_by_owner,
         model_perf_averages,
         usage_stats,
         week_window_start,
@@ -81,6 +83,8 @@ def usage_page(
     daily_rows = daily_q.order_by(UsageDaily.ok_count.desc()).limit(50).all()
     gpu_on = _gpu_power_enabled(request, db)
     live_slots = []
+    energy_keys = enrich_energy_with_owners(db, list(week["energy_by_key"]))
+    energy_owners = energy_by_owner(energy_keys) if user.is_platform_admin else []
     if user.is_platform_admin:
         from ...auth.source_admission import live_admission_rows
 
@@ -107,7 +111,8 @@ def usage_page(
             "latency_p95": day["latency_p95"],
             "watt_hours_day": day["watt_hours"],
             "watt_hours_week": week["watt_hours"],
-            "energy_by_key": week["energy_by_key"],
+            "energy_by_key": energy_keys,
+            "energy_by_owner": energy_owners,
             "chart_daily": daily_traffic_chart_svg(week["daily_series"], tz_label=str(zone)),
             "model_avgs": model_avgs,
             "daily_rows": daily_rows,

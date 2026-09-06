@@ -72,22 +72,63 @@
 </section>
 {% endif %}
 
-{% if gpu_power_enabled and energy_by_key %}
-<section class="panel" id="energy-by-key">
+{% if gpu_power_enabled and (energy_by_owner or energy_by_key) %}
+{% if is_admin and energy_by_owner %}
+<section class="panel" id="energy-by-owner">
   <div class="panel-head">
     <div class="panel-head-text">
-      <h2>Energy by key · 7d</h2>
-      <p class="panel-sub">Approximate Wh from metered OK requests (GPU sample × duration).</p>
+      <h2>Energy by owner · 7d</h2>
+      <p class="panel-sub">Approximate Wh rolled up across each user’s keys.</p>
     </div>
   </div>
   <div class="table-wrap">
     <table class="table-compact">
       <thead>
-        <tr><th>Key</th><th>OK</th><th>avg W</th><th>Wh</th></tr>
+        <tr><th>Owner</th><th>Keys</th><th>OK</th><th>avg W</th><th>Wh</th></tr>
+      </thead>
+      <tbody>
+      {% for r in energy_by_owner %}
+        <tr>
+          <td>
+            {% if r.owner_user_id %}
+            <a href="/keys?owner_user_id={{ r.owner_user_id }}">{{ r.owner_name }}</a>
+            {% else %}{{ r.owner_name }}{% endif %}
+          </td>
+          <td class="num">{{ r.keys }}</td>
+          <td class="num">{{ r.ok_count }}</td>
+          <td class="num">{% if r.watts_avg %}{{ '%.0f'|format(r.watts_avg) }}{% else %}—{% endif %}</td>
+          <td class="num"><strong>{{ '%.3f'|format(r.watt_hours) }}</strong></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+{% if energy_by_key %}
+<section class="panel" id="energy-by-key">
+  <div class="panel-head">
+    <div class="panel-head-text">
+      <h2>Energy by key · 7d</h2>
+      <p class="panel-sub">One row per key (same label, different owners stay separate).</p>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="table-compact">
+      <thead>
+        <tr>{% if is_admin %}<th>Owner</th>{% endif %}<th>Key</th><th>OK</th><th>avg W</th><th>Wh</th></tr>
       </thead>
       <tbody>
       {% for r in energy_by_key %}
         <tr>
+          {% if is_admin %}
+          <td>
+            {% if r.owner_user_id %}
+            <a href="/keys?owner_user_id={{ r.owner_user_id }}">{{ r.owner_name }}</a>
+            {% else %}{{ r.owner_name or '—' }}{% endif %}
+          </td>
+          {% endif %}
           <td class="mono">{{ r.key_label }}</td>
           <td class="num">{{ r.ok_count }}</td>
           <td class="num">{% if r.watts_avg %}{{ '%.0f'|format(r.watts_avg) }}{% else %}—{% endif %}</td>
@@ -98,6 +139,7 @@
     </table>
   </div>
 </section>
+{% endif %}
 {% endif %}
 
 <div class="panel panel-toolbar" role="search">

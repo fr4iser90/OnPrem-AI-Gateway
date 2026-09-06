@@ -6,7 +6,8 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy.orm import Session
+from sqlalchemy import func
+from sqlalchemy.orm import Session, joinedload
 
 from .data.models import UsageEvent, utcnow
 
@@ -202,8 +203,8 @@ def usage_stats(
 
 
 def energy_by_key(events: list) -> list[dict]:
-    """Approx Wh rollup per API key label (from already-filtered UsageEvent rows)."""
-    buckets: dict[str, dict] = {}
+    """Approx Wh rollup per API key id (not label — many keys share 'main')."""
+    buckets: dict[int | str, dict] = {}
     for e in events:
         if getattr(e, "result", None) != "ok":
             continue
@@ -211,12 +212,16 @@ def energy_by_key(events: list) -> list[dict]:
         w = getattr(e, "watts", None)
         if wh <= 0 and w is None:
             continue
+        kid = getattr(e, "api_key_id", None)
+        bucket_key: int | str = int(kid) if kid is not None else (
+            (getattr(e, "key_label", None) or "").strip() or "(unknown)"
+        )
         label = (getattr(e, "key_label", None) or "").strip() or "(unknown)"
         b = buckets.setdefault(
-            label,
+            bucket_key,
             {
                 "key_label": label,
-                "api_key_id": getattr(e, "api_key_id", None),
+                "api_key_id": int(kid) if kid is not None else None,
                 "ok_count": 0,
                 "watt_hours": 0.0,
                 "watts": [],
@@ -224,6 +229,8 @@ def energy_by_key(events: list) -> list[dict]:
         )
         b["ok_count"] += 1
         b["watt_hours"] += wh
+        if label and b["key_label"] == "(unknown)":
+            b["key_label"] = label
         if w is not None and float(w) > 0:
             b["watts"].append(float(w))
     out: list[dict] = []
@@ -233,13 +240,133 @@ def energy_by_key(events: list) -> list[dict]:
             {
                 "key_label": b["key_label"],
                 "api_key_id": b["api_key_id"],
+                "owner_user_id": None,
+                "owner_name": "",
                 "ok_count": b["ok_count"],
                 "watt_hours": round(float(b["watt_hours"]), 4),
                 "watts_avg": (sum(samples) / len(samples)) if samples else None,
             }
         )
-    out.sort(key=lambda r: (-r["watt_hours"], -r["ok_count"], r["key_label"]))
+    out.sort(
+        key=lambda r: (
+            -r["watt_hours"],
+            -r["ok_count"],
+            r["owner_name"],
+            r["key_label"],
+        )
+    )
     return out
+
+
+def enrich_energy_with_owners(db: Session, rows: list[dict]) -> list[dict]:
+    """Attach owner display names from ApiKey.owner_user_id."""
+    from .data.models import ApiKey
+
+    ids = [r["api_key_id"] for r in rows if r.get("api_key_id") is not None]
+    if not ids:
+        return rows
+    keys = (
+        db.query(ApiKey)
+        .options(joinedload(ApiKey.owner))
+        .filter(ApiKey.id.in_(ids))
+        .all()
+    )
+    meta: dict[int, tuple[int | None, str]] = {}
+    for k in keys:
+        owner = k.owner
+        oid = k.owner_user_id
+        if owner is None:
+            name = f"user#{oid}" if oid else "—"
+        else:
+            uname = (owner.username or "").strip()
+            if uname.startswith("pending-") or not uname:
+                name = (owner.email or uname or f"user-{owner.id}").strip()
+            else:
+                name = uname
+        meta[k.id] = (oid, name)
+    for r in rows:
+        kid = r.get("api_key_id")
+        if kid is None or kid not in meta:
+            r["owner_user_id"] = r.get("owner_user_id")
+            r["owner_name"] = r.get("owner_name") or "—"
+            continue
+        oid, name = meta[kid]
+        r["owner_user_id"] = oid
+        r["owner_name"] = name
+    rows.sort(
+        key=lambda r: (
+            -r["watt_hours"],
+            -r["ok_count"],
+            r.get("owner_name") or "",
+            r.get("key_label") or "",
+        )
+    )
+    return rows
+
+
+def energy_by_owner(key_rows: list[dict]) -> list[dict]:
+    """Roll key-level Wh up to owner (admin overview)."""
+    buckets: dict[str, dict] = {}
+    for r in key_rows:
+        oid = r.get("owner_user_id")
+        name = (r.get("owner_name") or "").strip() or "—"
+        key = str(oid) if oid is not None else f"name:{name}"
+        b = buckets.setdefault(
+            key,
+            {
+                "owner_user_id": oid,
+                "owner_name": name,
+                "ok_count": 0,
+                "watt_hours": 0.0,
+                "watts": [],
+                "keys": 0,
+            },
+        )
+        b["ok_count"] += int(r.get("ok_count") or 0)
+        b["watt_hours"] += float(r.get("watt_hours") or 0)
+        b["keys"] += 1
+        if r.get("watts_avg") is not None:
+            b["watts"].append(float(r["watts_avg"]))
+    out: list[dict] = []
+    for b in buckets.values():
+        samples = b.pop("watts")
+        out.append(
+            {
+                "owner_user_id": b["owner_user_id"],
+                "owner_name": b["owner_name"],
+                "keys": b["keys"],
+                "ok_count": b["ok_count"],
+                "watt_hours": round(float(b["watt_hours"]), 4),
+                "watts_avg": (sum(samples) / len(samples)) if samples else None,
+            }
+        )
+    out.sort(key=lambda r: (-r["watt_hours"], -r["ok_count"], r["owner_name"]))
+    return out
+
+
+def energy_wh_by_key_ids(
+    db: Session,
+    key_ids: list[int],
+    *,
+    lookback_days: int = 7,
+) -> dict[int, float]:
+    """Map api_key_id → approx Wh over lookback (for Keys table)."""
+    if not key_ids:
+        return {}
+    since = utcnow() - timedelta(days=max(1, int(lookback_days)))
+    rows = (
+        db.query(UsageEvent.api_key_id, func.sum(UsageEvent.watt_hours))
+        .filter(
+            UsageEvent.api_key_id.in_(key_ids),
+            UsageEvent.created_at >= since,
+            UsageEvent.result == "ok",
+            UsageEvent.watt_hours.isnot(None),
+            UsageEvent.watt_hours > 0,
+        )
+        .group_by(UsageEvent.api_key_id)
+        .all()
+    )
+    return {int(kid): round(float(wh or 0), 4) for kid, wh in rows if kid is not None}
 
 
 def model_perf_averages(
