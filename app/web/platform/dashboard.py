@@ -43,6 +43,7 @@ def dashboard(
     from ..dashboard_ops import attention_items, fleet_statuses, fleet_summary
     from ..setup import setup_status
     from ...data.backends import hardware_labels
+    from ...auth.source_admission import live_admission_rows
     from ...data.source_capacity import format_slots_label
 
     zone = zone_from_request(request, user)
@@ -74,6 +75,7 @@ def dashboard(
         pulse_status = "Degraded"
     else:
         pulse_status = "Healthy"
+    live_slots = live_admission_rows(db)
 
     return templates.TemplateResponse(
         request,
@@ -89,6 +91,8 @@ def dashboard(
             "by_model": day["by_model"],
             "tokens_in": day["tokens_in"],
             "watt_hours_day": day["watt_hours"],
+            "watt_hours_week": week["watt_hours"],
+            "energy_by_key": week["energy_by_key"],
             "latency_p95": day["latency_p95"],
             "chart_service": bar_chart_svg(day["by_service"], unit="requests"),
             "chart_model": bar_chart_svg([(m, c) for m, c in day["by_model"]], unit="requests"),
@@ -114,5 +118,6 @@ def dashboard(
             "hardware_by_name": hardware_labels(db),
             "format_slots_label": format_slots_label,
             "attention": attention,
+            "live_slots": live_slots,
         },
     )

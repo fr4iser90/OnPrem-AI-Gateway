@@ -39,6 +39,19 @@ def me_page(
     api_base = public_api_base()
     flash_ok = request.session.pop("flash_ok", None)
     pulse = pulse_stats(db, key_ids=key_ids)
+    from datetime import timedelta
+
+    from ...data.models import utcnow
+    from ...stats import usage_stats, week_window_start, zone_from_request
+    from ..shared import _gpu_power_enabled
+
+    zone = zone_from_request(request, user)
+    now = utcnow()
+    week = usage_stats(
+        db, since=week_window_start(zone), key_ids=key_ids, tz=zone
+    )
+    day = usage_stats(db, since=now - timedelta(days=1), key_ids=key_ids, tz=zone)
+    gpu_on = _gpu_power_enabled(request, db)
     return templates.TemplateResponse(
         request,
         "me.html",
@@ -53,6 +66,9 @@ def me_page(
             "chart_pulse": area_chart_svg(
                 pulse["series"], fill_id="gw-pulse", aria="Throughput last 60 minutes"
             ),
+            "watt_hours_day": day["watt_hours"],
+            "watt_hours_week": week["watt_hours"],
+            "gpu_power_enabled": gpu_on,
             "nav": "me",
             "is_admin": user.is_platform_admin,
             "teams_enabled": teams_on,

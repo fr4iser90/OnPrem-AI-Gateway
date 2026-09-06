@@ -248,10 +248,32 @@ def test_last_known_meta_retained_on_unload(tmp_path: Path):
 
     payload = openai_models_payload([row])
     assert payload["data"][0]["n_embd"] == 640
-    assert payload["data"][0]["ctx_size"] == 16384
+    assert payload["data"][0]["ctx_size"] == 8192  # per-slot for clients
+    assert payload["data"][0]["ctx_pool"] == 16384  # raw --ctx-size
     assert payload["data"][0]["n_parallel"] == 2
-    assert payload["data"][0]["context_length"] == 16384
+    assert payload["data"][0]["context_length"] == 8192  # per-slot: ctx_size // n_parallel
     assert payload["data"][0]["status"] == "unloaded"
+
+
+def test_context_length_divides_by_parallel(tmp_path: Path):
+    db = _session(tmp_path)
+    row = CatalogModel(
+        source_name="chat",
+        kind="chat",
+        model_id="vl-262k",
+        enabled=True,
+        ctx_size=262144,
+        n_parallel=3,
+        n_ctx_train=262144,
+    )
+    db.add(row)
+    db.commit()
+    item = openai_models_payload([row])["data"][0]
+    assert item["ctx_pool"] == 262144
+    assert item["ctx_size"] == 87381
+    assert item["n_parallel"] == 3
+    assert item["context_length"] == 87381  # 262144 // 3
+    assert item["n_ctx_train"] == 87381  # capped so Hermes won't read 262k
 
 
 def test_refresh_catalog_load_status_updates_badge_only(tmp_path: Path, monkeypatch):
@@ -362,7 +384,8 @@ def test_context_length_falls_back_to_n_ctx_train(tmp_path: Path):
     db.commit()
     payload = openai_models_payload([row])
     assert payload["data"][0]["context_length"] == 65536
-    assert "ctx_size" not in payload["data"][0]
+    assert payload["data"][0]["ctx_size"] == 65536  # same budget for clients that read ctx_size
+    assert "ctx_pool" not in payload["data"][0]
 
 
 def test_fetch_piper_voices_returns_discovered():

@@ -197,7 +197,49 @@ def usage_stats(
         "daily_series": daily_series,
         "event_count": len(events),
         "timezone": str(zone),
+        "energy_by_key": energy_by_key(events),
     }
+
+
+def energy_by_key(events: list) -> list[dict]:
+    """Approx Wh rollup per API key label (from already-filtered UsageEvent rows)."""
+    buckets: dict[str, dict] = {}
+    for e in events:
+        if getattr(e, "result", None) != "ok":
+            continue
+        wh = float(getattr(e, "watt_hours", None) or 0)
+        w = getattr(e, "watts", None)
+        if wh <= 0 and w is None:
+            continue
+        label = (getattr(e, "key_label", None) or "").strip() or "(unknown)"
+        b = buckets.setdefault(
+            label,
+            {
+                "key_label": label,
+                "api_key_id": getattr(e, "api_key_id", None),
+                "ok_count": 0,
+                "watt_hours": 0.0,
+                "watts": [],
+            },
+        )
+        b["ok_count"] += 1
+        b["watt_hours"] += wh
+        if w is not None and float(w) > 0:
+            b["watts"].append(float(w))
+    out: list[dict] = []
+    for b in buckets.values():
+        samples = b.pop("watts")
+        out.append(
+            {
+                "key_label": b["key_label"],
+                "api_key_id": b["api_key_id"],
+                "ok_count": b["ok_count"],
+                "watt_hours": round(float(b["watt_hours"]), 4),
+                "watts_avg": (sum(samples) / len(samples)) if samples else None,
+            }
+        )
+    out.sort(key=lambda r: (-r["watt_hours"], -r["ok_count"], r["key_label"]))
+    return out
 
 
 def model_perf_averages(

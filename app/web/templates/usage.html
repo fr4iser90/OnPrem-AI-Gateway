@@ -29,10 +29,76 @@
       <div class="pulse-kpi-label">Denied / 429</div>
       <div class="pulse-kpi-value">{{ '{:,}'.format(deny) }}<span class="unit">/ {{ '{:,}'.format(rate) }}</span></div>
     </div>
+    {% if gpu_power_enabled %}
+    <div>
+      <div class="pulse-kpi-label">Approx. energy · 24h</div>
+      <div class="pulse-kpi-value" title="Estimated from GPU samples × request duration">{% if watt_hours_day %}{{ '%.2f'|format(watt_hours_day) }}<span class="unit">Wh</span>{% else %}—{% endif %}</div>
+    </div>
+    <div>
+      <div class="pulse-kpi-label">Approx. energy · 7d</div>
+      <div class="pulse-kpi-value" title="Estimated GPU energy for your keys">{% if watt_hours_week %}{{ '%.2f'|format(watt_hours_week) }}<span class="unit">Wh</span>{% else %}—{% endif %}</div>
+    </div>
+    {% endif %}
   </div>
   {{ chart_daily | safe }}
-  <p class="pulse-foot">Throughput · last 7 days</p>
+  <p class="pulse-foot">Throughput · last 7 days{% if gpu_power_enabled %} · Wh is approximate (sidecar samples){% endif %}</p>
 </section>
+
+{% if is_admin and live_slots %}
+<section class="panel" id="live-slots">
+  <div class="panel-head">
+    <div class="panel-head-text">
+      <h2>Live slots (gateway)</h2>
+      <p class="panel-sub">Who holds admission slots right now — only traffic through this gateway.</p>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="table-compact">
+      <thead>
+        <tr><th>Source</th><th>Load</th><th>Holding</th><th>Queued</th></tr>
+      </thead>
+      <tbody>
+      {% for row in live_slots %}
+        <tr>
+          <td><span class="mono">{{ row.source }}</span> <span class="muted text-xs">{{ row.address }}</span></td>
+          <td class="mono">{{ row.label }}</td>
+          <td>{% if row.holders %}{% for h in row.holders %}<span class="badge">{{ h }}</span> {% endfor %}{% else %}—{% endif %}</td>
+          <td>{% if row.queued %}{% for h in row.queued %}<span class="badge off">{{ h }}</span> {% endfor %}{% else %}—{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+{% if gpu_power_enabled and energy_by_key %}
+<section class="panel" id="energy-by-key">
+  <div class="panel-head">
+    <div class="panel-head-text">
+      <h2>Energy by key · 7d</h2>
+      <p class="panel-sub">Approximate Wh from metered OK requests (GPU sample × duration).</p>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="table-compact">
+      <thead>
+        <tr><th>Key</th><th>OK</th><th>avg W</th><th>Wh</th></tr>
+      </thead>
+      <tbody>
+      {% for r in energy_by_key %}
+        <tr>
+          <td class="mono">{{ r.key_label }}</td>
+          <td class="num">{{ r.ok_count }}</td>
+          <td class="num">{% if r.watts_avg %}{{ '%.0f'|format(r.watts_avg) }}{% else %}—{% endif %}</td>
+          <td class="num"><strong>{{ '%.3f'|format(r.watt_hours) }}</strong></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
 
 <div class="panel panel-toolbar" role="search">
   <form method="get" action="/usage" class="row" aria-label="Filter usage events">

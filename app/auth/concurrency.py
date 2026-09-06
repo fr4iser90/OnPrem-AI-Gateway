@@ -24,4 +24,4 @@ def release_concurrency_lease(lease: ConcurrencyLease | None) -> None:
     if lease.source_key:
         from .source_admission import source_admission_gate
 
-        source_admission_gate.release(lease.source_key)
+        source_admission_gate.release(lease.source_key, key_id=lease.key_id)

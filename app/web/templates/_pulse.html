@@ -20,6 +20,16 @@
       <div class="pulse-kpi-label">p95 latency</div>
       <div class="pulse-kpi-value">{% if pulse.latency_p95 %}{{ '%.0f'|format(pulse.latency_p95) }}<span class="unit">ms</span>{% else %}—{% endif %}</div>
     </div>
+    {% if gpu_power_enabled is defined and gpu_power_enabled %}
+    <div>
+      <div class="pulse-kpi-label">Approx. Wh · 24h</div>
+      <div class="pulse-kpi-value" title="Estimated GPU energy for your keys">{% if watt_hours_day is defined and watt_hours_day %}{{ '%.2f'|format(watt_hours_day) }}{% else %}—{% endif %}</div>
+    </div>
+    <div>
+      <div class="pulse-kpi-label">Approx. Wh · 7d</div>
+      <div class="pulse-kpi-value" title="Estimated GPU energy for your keys">{% if watt_hours_week is defined and watt_hours_week %}{{ '%.2f'|format(watt_hours_week) }}{% else %}—{% endif %}</div>
+    </div>
+    {% endif %}
   </div>
   {{ chart_pulse | safe }}
   <p class="pulse-foot">Throughput · last 60 minutes</p>

@@ -387,15 +387,11 @@ def alias_list_entries(
         if cat is not None:
             from .data.catalog import (
                 architecture_for_openai_payload,
-                context_length_for_model,
+                attach_client_context_fields,
                 tags_for_openai_payload,
             )
 
-            ctx = context_length_for_model(cat)
-            if ctx is not None:
-                entry["context_length"] = ctx
-            if cat.ctx_size is not None:
-                entry["ctx_size"] = cat.ctx_size
+            attach_client_context_fields(entry, cat)
             tags = tags_for_openai_payload(cat)
             if tags:
                 entry["tags"] = tags

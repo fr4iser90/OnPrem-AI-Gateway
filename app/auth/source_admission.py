@@ -22,6 +22,7 @@ class _Waiter:
 class _GateState:
     limit: int
     inflight: int = 0
+    holders: list[int] = field(default_factory=list)  # api_key_id per held slot
     waiters: list[_Waiter] = field(default_factory=list)
 
 
@@ -32,6 +33,15 @@ class SourceAdmissionOutcome:
     retry_after: int = 15
     limit: int | None = None
     queued: bool = False
+
+
+@dataclass(frozen=True)
+class AdmissionSnapshot:
+    source_key: str
+    inflight: int
+    limit: int
+    holder_key_ids: tuple[int, ...]
+    queued_key_ids: tuple[int, ...]
 
 
 def resolve_admission_limit(
@@ -91,6 +101,7 @@ class SourceAdmissionGate:
             gate.limit = limit
             if gate.inflight < gate.limit and not gate.waiters:
                 gate.inflight += 1
+                gate.holders.append(int(key_id))
                 return True
             gate.waiters.append(waiter)
             gate.waiters.sort()
@@ -104,7 +115,7 @@ class SourceAdmissionGate:
             return False
         return True
 
-    def release(self, source_key: str) -> None:
+    def release(self, source_key: str, key_id: int | None = None) -> None:
         key = (source_key or "").strip()
         if not key:
             return
@@ -114,9 +125,18 @@ class SourceAdmissionGate:
                 return
             if gate.inflight > 0:
                 gate.inflight -= 1
+            if gate.holders:
+                if key_id is not None:
+                    try:
+                        gate.holders.remove(int(key_id))
+                    except ValueError:
+                        gate.holders.pop(0)
+                else:
+                    gate.holders.pop(0)
             while gate.waiters and gate.inflight < gate.limit:
                 next_waiter = gate.waiters.pop(0)
                 gate.inflight += 1
+                gate.holders.append(int(next_waiter.key_id))
                 next_waiter.event.set()
 
     def snapshot(self, source_key: str) -> tuple[int | None, int | None]:
@@ -129,6 +149,39 @@ class SourceAdmissionGate:
             if gate is None:
                 return None, None
             return gate.inflight, gate.limit
+
+    def snapshot_detail(self, source_key: str) -> AdmissionSnapshot | None:
+        key = (source_key or "").strip()
+        if not key:
+            return None
+        with self._lock:
+            gate = self._gates.get(key)
+            if gate is None:
+                return None
+            return AdmissionSnapshot(
+                source_key=key,
+                inflight=gate.inflight,
+                limit=gate.limit,
+                holder_key_ids=tuple(gate.holders),
+                queued_key_ids=tuple(w.key_id for w in gate.waiters),
+            )
+
+    def all_snapshots(self) -> list[AdmissionSnapshot]:
+        with self._lock:
+            out: list[AdmissionSnapshot] = []
+            for addr, gate in self._gates.items():
+                if gate.inflight <= 0 and not gate.waiters:
+                    continue
+                out.append(
+                    AdmissionSnapshot(
+                        source_key=addr,
+                        inflight=gate.inflight,
+                        limit=gate.limit,
+                        holder_key_ids=tuple(gate.holders),
+                        queued_key_ids=tuple(w.key_id for w in gate.waiters),
+                    )
+                )
+            return out
 
 
 source_admission_gate = SourceAdmissionGate()
@@ -209,3 +262,49 @@ def try_acquire_source_admission(
         limit=limit,
         queued=True,
     )
+
+
+def live_admission_rows(db) -> list[dict]:
+    """Admin view: gateway-held slots per source (not upstream-only clients)."""
+    from ..data.backends import list_sources
+    from ..data.models import ApiKey
+    from ..data.source_capacity import format_slots_label
+
+    by_addr = {
+        (s.address or "").strip(): s
+        for s in list_sources(db)
+        if (s.address or "").strip()
+    }
+    snaps = source_admission_gate.all_snapshots()
+    if not snaps:
+        return []
+
+    key_ids: set[int] = set()
+    for snap in snaps:
+        key_ids.update(snap.holder_key_ids)
+        key_ids.update(snap.queued_key_ids)
+    labels: dict[int, str] = {}
+    if key_ids:
+        for row in db.query(ApiKey).filter(ApiKey.id.in_(key_ids)).all():
+            labels[row.id] = row.label or f"key#{row.id}"
+
+    def _fmt(ids: tuple[int, ...]) -> list[str]:
+        return [labels.get(i, f"key#{i}") for i in ids]
+
+    rows: list[dict] = []
+    for snap in snaps:
+        src = by_addr.get(snap.source_key)
+        name = src.name if src is not None else snap.source_key
+        rows.append(
+            {
+                "source": name,
+                "address": snap.source_key,
+                "inflight": snap.inflight,
+                "limit": snap.limit,
+                "label": format_slots_label(snap.inflight, snap.limit),
+                "holders": _fmt(snap.holder_key_ids),
+                "queued": _fmt(snap.queued_key_ids),
+            }
+        )
+    rows.sort(key=lambda r: (-r["inflight"], r["source"]))
+    return rows

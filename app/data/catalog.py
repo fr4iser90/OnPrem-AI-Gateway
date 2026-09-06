@@ -810,15 +810,44 @@ def models_visible_for_key(
 
 
 def context_length_for_model(row: CatalogModel) -> int | None:
-    """OpenRouter-style max context for IDEs (Continue, OpenCode, …).
+    """Per-request max context for clients (Hermes, Continue, OpenCode, …).
 
-    Prefer ctx_size (--ctx-size on the loaded slot); else last-known n_ctx_train.
+    llama.cpp ``--ctx-size`` is often a shared KV pool across ``--parallel`` slots.
+    Clients that read ``context_length`` need the per-slot budget:
+    ``ctx_size // n_parallel`` when parallel > 1. Fall back to ``n_ctx_train``.
     """
     if row.ctx_size is not None and row.ctx_size > 0:
-        return row.ctx_size
+        parallel = row.n_parallel
+        if parallel is not None and parallel > 1:
+            return max(1, int(row.ctx_size) // int(parallel))
+        return int(row.ctx_size)
     if row.n_ctx_train is not None and row.n_ctx_train > 0:
-        return row.n_ctx_train
+        return int(row.n_ctx_train)
     return None
+
+
+def attach_client_context_fields(entry: dict, row: CatalogModel) -> dict:
+    """Write context fields clients understand as per-request budget.
+
+    Hermes and similar often prefer ``ctx_size`` / ``n_ctx_train`` over
+    ``context_length``. Never advertise the full KV pool there when parallel > 1;
+    keep the pool size in ``ctx_pool`` for ops/UI.
+    """
+    ctx = context_length_for_model(row)
+    pool = int(row.ctx_size) if row.ctx_size is not None and row.ctx_size > 0 else None
+    if ctx is not None:
+        entry["context_length"] = ctx
+        entry["ctx_size"] = ctx
+    if pool is not None and pool != ctx:
+        entry["ctx_pool"] = pool
+    if row.n_parallel is not None:
+        entry["n_parallel"] = row.n_parallel
+    if row.n_ctx is not None:
+        entry["n_ctx"] = row.n_ctx
+    if row.n_ctx_train is not None and row.n_ctx_train > 0:
+        train = int(row.n_ctx_train)
+        entry["n_ctx_train"] = min(train, ctx) if ctx is not None else train
+    return entry
 
 
 def openai_models_payload(
@@ -844,17 +873,7 @@ def openai_models_payload(
         }
         if (row.short_note or "").strip():
             entry["description"] = row.short_note
-        if row.ctx_size is not None:
-            entry["ctx_size"] = row.ctx_size
-        if row.n_parallel is not None:
-            entry["n_parallel"] = row.n_parallel
-        ctx_len = context_length_for_model(row)
-        if ctx_len is not None:
-            entry["context_length"] = ctx_len
-        if row.n_ctx is not None:
-            entry["n_ctx"] = row.n_ctx
-        if row.n_ctx_train is not None:
-            entry["n_ctx_train"] = row.n_ctx_train
+        attach_client_context_fields(entry, row)
         if row.n_embd is not None:
             entry["n_embd"] = row.n_embd
         if row.n_params is not None:

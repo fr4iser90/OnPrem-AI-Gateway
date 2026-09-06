@@ -17,8 +17,9 @@
 <details class="panel panel-details">
   <summary class="muted">How metadata{% if pool_model_weights_enabled %}, budget factor,{% endif %} and VL pairing work</summary>
   <p class="muted hint-after">
-    <strong>ctx_size</strong> comes from upstream <span class="mono">--ctx-size</span> when listed.
-    <strong>context_length</strong> in <span class="mono">GET /v1/models</span> mirrors <span class="mono">ctx_size</span> (OpenRouter-style for Continue/OpenCode).
+    <strong>ctx_size</strong> / <strong>context_length</strong> on <span class="mono">GET /v1/models</span>
+    are the per-request budget (<span class="mono">pool // n_parallel</span> when parallel &gt; 1).
+    Raw upstream <span class="mono">--ctx-size</span> is exposed as <span class="mono">ctx_pool</span>.
     <strong>n_ctx / n_embd / n_params</strong> from upstream <span class="mono">meta</span> while loaded —
     Tags/notes/docs/<span class="mono">recommended_sampling</span> are admin-owned; sync does not overwrite them.
     Sampling JSON is listed on <span class="mono">GET /v1/models</span> for clients.

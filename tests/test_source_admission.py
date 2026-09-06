@@ -94,6 +94,22 @@ def test_try_acquire_uses_explicit_limit():
     gate.release("127.0.0.1:8080")
 
 
+def test_gate_tracks_holders():
+    gate = SourceAdmissionGate()
+    assert gate.acquire("h:1", limit=2, key_id=10, priority=0, timeout=0.1)
+    assert gate.acquire("h:1", limit=2, key_id=20, priority=0, timeout=0.1)
+    detail = gate.snapshot_detail("h:1")
+    assert detail is not None
+    assert detail.inflight == 2
+    assert detail.holder_key_ids == (10, 20)
+    gate.release("h:1", key_id=10)
+    detail = gate.snapshot_detail("h:1")
+    assert detail.inflight == 1
+    assert detail.holder_key_ids == (20,)
+    gate.release("h:1", key_id=20)
+    assert gate.all_snapshots() == []
+
+
 def test_resolve_queue_timeout():
     assert resolve_queue_timeout(source_timeout=10, platform_timeout=30) == 10.0
     assert resolve_queue_timeout(source_timeout=None, platform_timeout=25) == 25.0

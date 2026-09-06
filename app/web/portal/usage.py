@@ -79,6 +79,12 @@ def usage_page(
     else:
         daily_q = daily_q.filter(False)
     daily_rows = daily_q.order_by(UsageDaily.ok_count.desc()).limit(50).all()
+    gpu_on = _gpu_power_enabled(request, db)
+    live_slots = []
+    if user.is_platform_admin:
+        from ...auth.source_admission import live_admission_rows
+
+        live_slots = live_admission_rows(db)
     return templates.TemplateResponse(
         request,
         "usage.html",
@@ -99,13 +105,17 @@ def usage_page(
             "rate": day["rate_limits"],
             "tokens_in": day["tokens_in"],
             "latency_p95": day["latency_p95"],
+            "watt_hours_day": day["watt_hours"],
+            "watt_hours_week": week["watt_hours"],
+            "energy_by_key": week["energy_by_key"],
             "chart_daily": daily_traffic_chart_svg(week["daily_series"], tz_label=str(zone)),
             "model_avgs": model_avgs,
             "daily_rows": daily_rows,
+            "live_slots": live_slots,
             "nav": "usage",
             "is_admin": user.is_platform_admin,
             "teams_enabled": teams_on,
-            "gpu_power_enabled": _gpu_power_enabled(request, db),
+            "gpu_power_enabled": gpu_on,
         },
     )
 

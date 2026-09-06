@@ -9,6 +9,75 @@
 
 {% include "_pulse.html" %}
 
+{% if gpu_power_enabled %}
+<section class="panel">
+  <div class="panel-head">
+    <div class="panel-head-text">
+      <h2>Energy · fleet</h2>
+      <p class="panel-sub">Approximate GPU Wh from metered OK requests (sidecar samples × duration).</p>
+    </div>
+  </div>
+  <div class="pulse-kpis">
+    <div>
+      <div class="pulse-kpi-label">24h</div>
+      <div class="pulse-kpi-value">{% if watt_hours_day %}{{ '%.2f'|format(watt_hours_day) }}<span class="unit">Wh</span>{% else %}—{% endif %}</div>
+    </div>
+    <div>
+      <div class="pulse-kpi-label">7d</div>
+      <div class="pulse-kpi-value">{% if watt_hours_week %}{{ '%.2f'|format(watt_hours_week) }}<span class="unit">Wh</span>{% else %}—{% endif %}</div>
+    </div>
+  </div>
+  {% if energy_by_key %}
+  <div class="table-wrap mt-half">
+    <table class="table-compact">
+      <thead><tr><th>Key</th><th>OK · 7d</th><th>avg W</th><th>Wh · 7d</th></tr></thead>
+      <tbody>
+      {% for r in energy_by_key[:12] %}
+        <tr>
+          <td class="mono">{{ r.key_label }}</td>
+          <td class="num">{{ r.ok_count }}</td>
+          <td class="num">{% if r.watts_avg %}{{ '%.0f'|format(r.watts_avg) }}{% else %}—{% endif %}</td>
+          <td class="num"><strong>{{ '%.3f'|format(r.watt_hours) }}</strong></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="muted text-sm mt-half"><a href="/usage#energy-by-key">Full energy table on Usage</a></p>
+  {% else %}
+  <p class="muted">No Wh samples yet — needs GPU sidecar on source hosts and chat via gateway entry.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if live_slots %}
+<section class="panel" id="live-slots">
+  <div class="panel-head">
+    <div class="panel-head-text">
+      <h2>Live slots (gateway)</h2>
+      <p class="panel-sub">Keys holding admission right now — refresh the page to update.</p>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="table-compact">
+      <thead>
+        <tr><th>Source</th><th>Load</th><th>Holding</th><th>Queued</th></tr>
+      </thead>
+      <tbody>
+      {% for row in live_slots %}
+        <tr>
+          <td><span class="mono">{{ row.source }}</span></td>
+          <td class="mono">{{ row.label }}</td>
+          <td>{% if row.holders %}{% for h in row.holders %}<span class="badge">{{ h }}</span> {% endfor %}{% else %}—{% endif %}</td>
+          <td>{% if row.queued %}{% for h in row.queued %}<span class="badge off">{{ h }}</span> {% endfor %}{% else %}—{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
 <section class="panel fleet-panel">
   <div class="panel-head">
     <div class="panel-head-text">
