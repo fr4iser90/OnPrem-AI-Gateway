@@ -125,6 +125,8 @@ class ApiKey(Base):
     priority: Mapped[int | None] = mapped_column(Integer, nullable=True)
     routing_strategy: Mapped[str | None] = mapped_column(String(32), nullable=True)
     preferred_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Soft-fill profile when client omits sampling: "" = catalog default_profile.
+    sampling_profile: Mapped[str] = mapped_column(String(32), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -394,8 +396,6 @@ class ModelAlias(Base):
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     # Hide target + candidates from GET /v1/models (clients see the alias only).
     hide_candidates: Mapped[bool] = mapped_column(Boolean, default=True)
-    # Optional prefix for family suggest, e.g. "Qwen3.6" → all Qwen3.6-* models.
-    family_prefix: Mapped[str] = mapped_column(String(128), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     candidates: Mapped[list[ModelAliasCandidate]] = relationship(
@@ -441,10 +441,14 @@ class CatalogModel(Base):
     tags: Mapped[str] = mapped_column(String(512), default="")  # comma-separated: tools,vision,…
     short_note: Mapped[str] = mapped_column(String(512), default="")
     docs_url: Mapped[str] = mapped_column(String(512), default="")  # HF / docs link
+    # Admin-curated JSON for clients (GET /v1/models). Never applied to inference.
+    recommended_sampling: Mapped[str] = mapped_column(Text, default="")
     # Last-known fields from upstream /v1/models (llama.cpp etc.). Never invent:
-    # ctx_size from status.args --ctx-size; meta.* only when status was loaded.
+    # ctx_size from status.args --ctx-size; n_parallel from --parallel;
+    # meta.* only when status was loaded.
     upstream_status: Mapped[str] = mapped_column(String(32), default="")  # loaded|unloaded|…
     ctx_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    n_parallel: Mapped[int | None] = mapped_column(Integer, nullable=True)  # --parallel
     n_ctx: Mapped[int | None] = mapped_column(Integer, nullable=True)
     n_ctx_train: Mapped[int | None] = mapped_column(Integer, nullable=True)
     n_embd: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -508,6 +512,12 @@ class AuthSettings(Base):
     source_queue_timeout_sec: Mapped[int] = mapped_column(Integer, default=30)
     # After sync: disable catalog rows no longer listed upstream (per source).
     catalog_prune_on_sync: Mapped[bool] = mapped_column(Boolean, default=True)
+    # When on: chat requests missing temperature/etc. get catalog recommended_sampling
+    # (default_profile / client hint). Never overrides keys the client already sent.
+    soft_sampling_defaults: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Periodic catalog sync from sources (discover new / prune stale). Off by default.
+    catalog_auto_sync: Mapped[bool] = mapped_column(Boolean, default=False)
+    catalog_auto_sync_minutes: Mapped[int] = mapped_column(Integer, default=30)
     # New users (and self-register): comma source names; empty = sources marked default.
     default_grant_sources: Mapped[str] = mapped_column(Text, default="")
     # Newline "source:model"; empty = all ON models for those sources.

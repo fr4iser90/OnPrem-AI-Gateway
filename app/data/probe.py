@@ -251,7 +251,9 @@ def probe_source(src: BackendSource) -> ServiceStatus:
                         status.probes_ok.append("/slots")
                         if busy and status.state == "ok":
                             status.state = "busy"
-                            status.detail = f"{busy}/{total} slots busy"
+                            from .source_capacity import format_slots_label
+
+                            status.detail = format_slots_label(busy, total)
                         elif status.state == "ok":
                             status.detail = f"{total} slots, all idle"
 

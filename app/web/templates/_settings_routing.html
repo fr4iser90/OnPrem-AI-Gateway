@@ -4,10 +4,29 @@
     <h3 class="section-label">OnPrem AI Gateway behavior</h3>
     <div class="checkboxes checkboxes-block">
       <label><input type="checkbox" name="auto_vl_routing" {% if auth.auto_vl_routing %}checked{% endif %}> Auto-route image chat → VL model</label>
-      <label><input type="checkbox" name="preflight_upstream" {% if auth.preflight_upstream %}checked{% endif %}> Strict preflight (503 when busy / loading / probe failed)</label>
+      <label><input type="checkbox" name="preflight_upstream" {% if auth.preflight_upstream %}checked{% endif %}> Strict preflight (503 when all slots full / loading / probe failed)</label>
       <label><input type="checkbox" name="source_admission_enabled" {% if auth.source_admission_enabled %}checked{% endif %}> Per-source admission queue (after preflight)</label>
       <label><input type="checkbox" name="catalog_prune_on_sync" {% if auth.catalog_prune_on_sync %}checked{% endif %}> Auto-disable catalog rows missing from upstream after sync</label>
+      <label><input type="checkbox" name="catalog_auto_sync" {% if auth.catalog_auto_sync %}checked{% endif %}> Auto-sync catalog from sources on an interval</label>
+      <label><input type="checkbox" name="soft_sampling_defaults" {% if auth.soft_sampling_defaults %}checked{% endif %}> Soft-fill missing chat sampling from catalog <span class="mono">recommended_sampling</span></label>
     </div>
+    <div class="field field-gap-sm">
+      <label for="catalog-auto-sync-minutes">Catalog auto-sync interval (minutes)</label>
+      <input id="catalog-auto-sync-minutes" type="number" name="catalog_auto_sync_minutes"
+             min="5" max="1440" value="{{ auth.catalog_auto_sync_minutes or 30 }}">
+      <p class="muted mt-0 text-sm">
+        Only runs when auto-sync is checked (5–1440 min). Same as Models → Sync:
+        discovers new models; prune follows the prune checkbox. Admin notes/sampling stay.
+      </p>
+    </div>
+    <p class="muted mt-0 text-sm">
+      Soft-fill (off by default): only when the client omits <span class="mono">temperature</span>/<span class="mono">top_p</span>/…
+      and template flags (<span class="mono">enable_thinking</span>, <span class="mono">preserve_thinking</span>,
+      <span class="mono">reasoning_effort</span>). Uses the model’s catalog profiles —
+      <span class="mono">default_profile</span>, or
+      <span class="mono">X-OnPrem-Sampling-Profile</span> / <span class="mono">enable_thinking</span> when the client sends them.
+      Never overrides fields the client already set; does not invent thinking vs instruct without a signal.
+    </p>
     <div class="field field-gap-sm">
       <label for="routing-strategy">Tie-break strategy (same model on multiple sources)</label>
       <select id="routing-strategy" name="routing_strategy">

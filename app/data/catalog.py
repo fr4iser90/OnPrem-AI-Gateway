@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 from sqlalchemy.orm import Session, joinedload
@@ -35,6 +37,7 @@ class DiscoveredModel:
     model_id: str
     upstream_status: str = ""
     ctx_size: int | None = None
+    n_parallel: int | None = None
     n_ctx: int | None = None
     n_ctx_train: int | None = None
     n_embd: int | None = None
@@ -155,6 +158,75 @@ def catalog_grouped_by_kind(rows: list[CatalogModel]) -> list[tuple[str, list[Ca
     return out
 
 
+def parse_recommended_sampling(raw: str | None) -> dict[str, Any] | None:
+    """Validate admin JSON for recommended_sampling; None if empty/invalid."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) and data else None
+
+
+def dump_recommended_sampling(profiles: dict[str, Any] | None) -> str:
+    if not profiles:
+        return ""
+    return json.dumps(profiles, separators=(",", ":"), sort_keys=True)
+
+
+def normalize_recommended_sampling_input(raw: str | None) -> tuple[str, str | None]:
+    """Return (stored_json_or_empty, error). Empty input clears the field."""
+    text = (raw or "").strip()
+    if not text:
+        return "", None
+    parsed = parse_recommended_sampling(text)
+    if parsed is None:
+        return "", "recommended_sampling must be a JSON object"
+    return dump_recommended_sampling(parsed), None
+
+
+def import_recommended_sampling(
+    db: Session,
+    mapping: dict[str, Any],
+    *,
+    overwrite: bool = False,
+) -> dict[str, int]:
+    """Apply sampling profiles by longest substring key match on model_id.
+
+    ``mapping`` keys are fragments (e.g. ``Qwen3.8-Flash-Next``); values are
+    profile objects. Catalog metadata only — never touches inference requests.
+    """
+    keyed = [((k or "").strip(), k) for k in mapping.keys() if (k or "").strip()]
+    keyed.sort(key=lambda pair: len(pair[0]), reverse=True)
+    updated = 0
+    skipped = 0
+    unmatched = 0
+    for row in list_catalog(db):
+        mid = (row.model_id or "").lower().replace("_", "-")
+        if not mid or "mmproj" in mid:
+            continue
+        hit_orig: str | None = None
+        for needle, orig in keyed:
+            if needle.lower().replace("_", "-") in mid:
+                hit_orig = orig
+                break
+        if hit_orig is None:
+            unmatched += 1
+            continue
+        profiles = mapping.get(hit_orig)
+        if not isinstance(profiles, dict) or not profiles:
+            skipped += 1
+            continue
+        if not overwrite and parse_recommended_sampling(row.recommended_sampling):
+            skipped += 1
+            continue
+        row.recommended_sampling = dump_recommended_sampling(profiles)
+        updated += 1
+    return {"updated": updated, "skipped": skipped, "unmatched": unmatched}
+
+
 def update_catalog_meta(
     db: Session,
     catalog_id: int,
@@ -162,6 +234,7 @@ def update_catalog_meta(
     tags: str | None = None,
     short_note: str | None = None,
     docs_url: str | None = None,
+    recommended_sampling: str | None = None,
     usage_weight: float | None = None,
 ) -> CatalogModel | None:
     row = db.get(CatalogModel, catalog_id)
@@ -176,6 +249,11 @@ def update_catalog_meta(
         if url and not (url.startswith("https://") or url.startswith("http://")):
             url = ""
         row.docs_url = url
+    if recommended_sampling is not None:
+        stored, err = normalize_recommended_sampling_input(recommended_sampling)
+        if err:
+            raise ValueError(err)
+        row.recommended_sampling = stored
     if usage_weight is not None:
         row.usage_weight = max(0.01, float(usage_weight))
     return row
@@ -316,6 +394,18 @@ def ctx_size_from_args(args) -> int | None:
     return None
 
 
+def parallel_from_args(args) -> int | None:
+    """Extract --parallel / -np from llama.cpp status.args (works unloaded)."""
+    if not isinstance(args, list):
+        return None
+    for i, arg in enumerate(args):
+        if arg in ("--parallel", "-np") and i + 1 < len(args):
+            n = _as_int(args[i + 1])
+            if n is not None and n > 0:
+                return n
+    return None
+
+
 def parse_openai_model_item(item: dict) -> DiscoveredModel | None:
     """Map one /v1/models data[] entry. Does not invent missing meta fields."""
     if not isinstance(item, dict):
@@ -329,7 +419,9 @@ def parse_openai_model_item(item: dict) -> DiscoveredModel | None:
         value = status.get("value")
         if value is not None and str(value).strip():
             disc.upstream_status = str(value).strip()[:32]
-        disc.ctx_size = ctx_size_from_args(status.get("args"))
+        args = status.get("args")
+        disc.ctx_size = ctx_size_from_args(args)
+        disc.n_parallel = parallel_from_args(args)
     arch = item.get("architecture")
     if isinstance(arch, dict):
         disc.modalities_in = _join_modalities(arch.get("input_modalities"))
@@ -351,6 +443,8 @@ def apply_discovered_fields(row: CatalogModel, disc: DiscoveredModel, *, now) ->
         row.upstream_status = disc.upstream_status
     if disc.ctx_size is not None:
         row.ctx_size = disc.ctx_size
+    if disc.n_parallel is not None:
+        row.n_parallel = disc.n_parallel
     if disc.modalities_in:
         row.modalities_in = disc.modalities_in
     if disc.modalities_out:
@@ -468,6 +562,65 @@ def discover_models_for_source(address: str, kind: str) -> SourceDiscovery:
     if kind == "stt":
         return SourceDiscovery([], ok=True)
     return SourceDiscovery([], ok=False)
+
+
+def refresh_catalog_load_status(db: Session) -> int:
+    """Probe upstream /v1/models and update only ``upstream_status`` on catalog rows.
+
+    Lightweight (no create/prune/meta). Call from Sync / explicit refresh — not on
+    every Models page load (upstream timeouts starve the worker threadpool).
+    Returns rows whose status changed.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    sources = [
+        s
+        for s in list_sources(db)
+        if (s.address or "").strip() and s.kind in ("chat", "embed", "stt", "tts")
+    ]
+    if not sources:
+        return 0
+
+    def _one(src) -> tuple[str, SourceDiscovery]:
+        try:
+            return src.name, discover_models_for_source(src.address.strip(), src.kind)
+        except Exception:
+            return src.name, SourceDiscovery([], ok=False)
+
+    discoveries: dict[str, SourceDiscovery] = {}
+    workers = min(8, len(sources))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = [pool.submit(_one, s) for s in sources]
+        for fut in as_completed(futs):
+            name, disc = fut.result()
+            discoveries[name] = disc
+
+    changed = 0
+    for src in sources:
+        disc = discoveries.get(src.name)
+        if disc is None or not disc.ok:
+            continue
+        by_id = {
+            d.model_id: d.upstream_status
+            for d in disc.models
+            if d.model_id and d.upstream_status
+        }
+        if not by_id:
+            continue
+        rows = (
+            db.query(CatalogModel)
+            .filter(CatalogModel.source_name == src.name)
+            .all()
+        )
+        for row in rows:
+            new_status = by_id.get(row.model_id)
+            if not new_status or row.upstream_status == new_status:
+                continue
+            row.upstream_status = new_status[:32]
+            changed += 1
+    if changed:
+        db.commit()
+    return changed
 
 
 def _catalog_prune_enabled(db: Session) -> bool:
@@ -693,6 +846,8 @@ def openai_models_payload(
             entry["description"] = row.short_note
         if row.ctx_size is not None:
             entry["ctx_size"] = row.ctx_size
+        if row.n_parallel is not None:
+            entry["n_parallel"] = row.n_parallel
         ctx_len = context_length_for_model(row)
         if ctx_len is not None:
             entry["context_length"] = ctx_len
@@ -714,6 +869,9 @@ def openai_models_payload(
         arch = architecture_for_openai_payload(row)
         if arch:
             entry["architecture"] = arch
+        sampling = parse_recommended_sampling(row.recommended_sampling)
+        if sampling:
+            entry["recommended_sampling"] = sampling
         if capacity_by_source:
             cap = capacity_by_source.get(row.source_name)
             if isinstance(cap, SourceCapacity):

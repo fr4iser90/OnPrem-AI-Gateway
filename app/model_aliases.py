@@ -1,8 +1,7 @@
-"""Public model aliases: stable client ids → real catalog model + candidate pool.
+"""Public model aliases: stable client ids → active catalog model + candidate pool.
 
-Option B: each alias is a slot (e.g. qwen3.6) with an active target and a pool of
-candidates. When hide_candidates is on, targets/candidates are filtered from
-GET /v1/models so clients see one id per slot.
+Admin manages candidates explicitly. When hide_candidates is on, pool ids are
+filtered from GET /v1/models so clients see the alias only.
 """
 
 from __future__ import annotations
@@ -39,7 +38,6 @@ def validate_alias_id(raw: str | None) -> str | None:
     mid = normalize_alias_id(raw)
     if not mid or not _ALIAS_RE.match(mid):
         return None
-    # Reserved auto slots stay on auto_route.py
     if mid in {"auto", "auto-quality", "auto-long"}:
         return None
     return mid
@@ -53,9 +51,70 @@ def infer_family_prefix(model_id: str | None) -> str:
     m = _FAMILY_SIZE_RE.search(mid)
     if m:
         return mid[: m.start()].rstrip("-_.")
-    # Fallback: first hyphen segment if it looks versioned (qwen3.6)
     head = mid.split("-", 1)[0]
     return head if head else mid
+
+
+def family_matches(
+    db: Session,
+    *,
+    prefix: str | None = None,
+    alias_id: str | None = None,
+    kind: str = "chat",
+) -> list[str]:
+    """Catalog model ids matching family prefix and/or slot:alias tag (incl. VL)."""
+    pref = (prefix or "").strip()
+    aid = normalize_alias_id(alias_id)
+    if not pref and not aid:
+        return []
+    found: list[str] = []
+    seen: set[str] = set()
+    q = db.query(CatalogModel).filter(CatalogModel.enabled.is_(True))
+    if kind:
+        q = q.filter(CatalogModel.kind == kind)
+    for row in q.order_by(CatalogModel.model_id).all():
+        mid = (row.model_id or "").strip()
+        if not mid or mid in seen:
+            continue
+        match = False
+        if pref and (
+            mid == pref or mid.startswith(pref + "-") or mid.startswith(pref + "_")
+        ):
+            match = True
+        if not match and aid:
+            tags = row.tags or ""
+            for m in _SLOT_TAG_RE.finditer(tags):
+                if m.group(1).lower() == aid:
+                    match = True
+                    break
+        if match:
+            seen.add(mid)
+            found.append(mid)
+    return found
+
+
+def detect_similar_models(
+    db: Session,
+    *,
+    model_id: str | None,
+    kind: str | None = None,
+    alias_id: str | None = None,
+) -> tuple[str, list[str]]:
+    """Explicit Detect helper: (prefix, matching ids). Never auto-writes DB."""
+    mid = (model_id or "").strip()
+    if not mid:
+        return "", []
+    k = (kind or "").strip().lower() or kind_for_model(db, mid)
+    pref = infer_family_prefix(mid)
+    matches = family_matches(db, prefix=pref or None, alias_id=alias_id, kind=k)
+    if mid not in matches:
+        # Active may be disabled in catalog edge-case — still surface it for UI.
+        entry = alias_picker_meta(db).get(mid)
+        if entry and (not k or entry.get("kind") == k):
+            matches = [mid] + matches
+        elif not matches:
+            matches = [mid]
+    return pref, matches
 
 
 def get_alias(db: Session, alias_id: str | None) -> ModelAlias | None:
@@ -146,50 +205,14 @@ def candidate_model_ids(row: ModelAlias) -> list[str]:
 
 
 def hidden_catalog_ids(db: Session) -> set[str]:
-    """Catalog model ids that should not appear in GET /v1/models for clients."""
+    """Catalog model ids hidden from GET /v1/models when aliases request it."""
     hidden: set[str] = set()
     for row in list_aliases(db, enabled_only=True):
-        if not getattr(row, "hide_candidates", True):
+        if not bool(getattr(row, "hide_candidates", True)):
             continue
         for mid in candidate_model_ids(row):
             hidden.add(mid)
     return hidden
-
-
-def family_matches(
-    db: Session,
-    *,
-    prefix: str | None = None,
-    alias_id: str | None = None,
-    kind: str = "chat",
-) -> list[str]:
-    """Catalog model ids matching family prefix and/or slot:alias tag."""
-    pref = (prefix or "").strip()
-    aid = normalize_alias_id(alias_id)
-    if not pref and not aid:
-        return []
-    found: list[str] = []
-    seen: set[str] = set()
-    q = db.query(CatalogModel).filter(CatalogModel.enabled.is_(True))
-    if kind:
-        q = q.filter(CatalogModel.kind == kind)
-    for row in q.order_by(CatalogModel.model_id).all():
-        mid = (row.model_id or "").strip()
-        if not mid or mid in seen:
-            continue
-        match = False
-        if pref and (mid == pref or mid.startswith(pref + "-") or mid.startswith(pref + "_")):
-            match = True
-        if not match and aid:
-            tags = row.tags or ""
-            for m in _SLOT_TAG_RE.finditer(tags):
-                if m.group(1).lower() == aid:
-                    match = True
-                    break
-        if match:
-            seen.add(mid)
-            found.append(mid)
-    return found
 
 
 def set_candidates(
@@ -211,30 +234,10 @@ def set_candidates(
         target = (row.target_model_id or "").strip()
         if target and target not in seen:
             ids.insert(0, target[:256])
-            seen.add(target)
     row.candidates.clear()
     db.flush()
     for i, mid in enumerate(ids):
-        row.candidates.append(
-            ModelAliasCandidate(model_id=mid, sort_order=i)
-        )
-
-
-def suggest_and_set_candidates(
-    db: Session,
-    row: ModelAlias,
-    *,
-    prefix: str | None = None,
-) -> list[str]:
-    """Fill candidates from family heuristic; keep current target active."""
-    fam = (prefix or row.family_prefix or "").strip()
-    if not fam:
-        fam = infer_family_prefix(row.target_model_id)
-    if fam:
-        row.family_prefix = fam[:128]
-    matches = family_matches(db, prefix=fam, alias_id=row.alias_id, kind=row.kind or "chat")
-    set_candidates(db, row, matches, ensure_target=True)
-    return candidate_model_ids(row)
+        row.candidates.append(ModelAliasCandidate(model_id=mid, sort_order=i))
 
 
 def upsert_alias(
@@ -249,9 +252,7 @@ def upsert_alias(
     kind: str = "chat",
     sort_order: int = 0,
     hide_candidates: bool = True,
-    family_prefix: str = "",
     candidates: list[str] | None = None,
-    suggest_family: bool = False,
 ) -> ModelAlias | None:
     mid = validate_alias_id(alias_id)
     target = (target_model_id or "").strip()
@@ -268,26 +269,38 @@ def upsert_alias(
         db.add(row)
         db.flush()
     row.target_model_id = target[:256]
-    row.preferred_source = (preferred_source or "").strip().lower()[:64]
+    row.kind = kind_for_model(db, target)[:16]
+    row.preferred_source = normalize_preferred_source(db, target, preferred_source)[:64]
     row.description = (description or "").strip()[:512]
     row.show_backend = bool(show_backend)
     row.enabled = bool(enabled)
-    row.kind = (kind or "chat").strip().lower()[:16] or "chat"
     row.sort_order = int(sort_order)
     row.hide_candidates = bool(hide_candidates)
-    fam = (family_prefix or "").strip() or infer_family_prefix(target)
-    row.family_prefix = fam[:128]
-    if suggest_family:
-        suggest_and_set_candidates(db, row, prefix=fam or None)
-    elif candidates is not None:
+    if candidates is not None:
         set_candidates(db, row, candidates, ensure_target=True)
     elif not row.candidates:
-        # First create without explicit list: at least the active target.
         set_candidates(db, row, [target], ensure_target=True)
     else:
-        # Ensure active target stays in the pool when only target changes.
         set_candidates(db, row, candidate_model_ids(row), ensure_target=True)
     return row
+
+
+def rename_alias(db: Session, row: ModelAlias, new_alias_id: str) -> str | None:
+    """Rename public id. Returns new id or None if invalid/taken."""
+    mid = validate_alias_id(new_alias_id)
+    if not mid:
+        return None
+    if mid == row.alias_id:
+        return mid
+    clash = (
+        db.query(ModelAlias)
+        .filter(ModelAlias.alias_id == mid, ModelAlias.id != row.id)
+        .first()
+    )
+    if clash is not None:
+        return None
+    row.alias_id = mid
+    return mid
 
 
 def delete_alias(db: Session, alias_id: str) -> bool:
@@ -324,11 +337,6 @@ def alias_visible_for_allow(
     *,
     allow: set[str] | None,
 ) -> bool:
-    """Whether this alias should appear for a key with the given model allow set.
-
-    ``allow is None`` means unrestricted. Alias shows if alias_id or active
-    target is listed (so admins can grant either the stable id or the backend).
-    """
     if allow is None:
         return True
     if row.alias_id in allow:
@@ -344,7 +352,7 @@ def alias_list_entries(
     allowed_sources: set[str] | None = None,
     capacity_by_source: dict | None = None,
 ) -> list[dict]:
-    """Synthetic /v1/models rows for enabled aliases (clients pick stable ids)."""
+    """Synthetic /v1/models rows for enabled aliases."""
     from .data.source_capacity import SourceCapacity, attach_capacity
 
     out: list[dict] = []
@@ -352,12 +360,7 @@ def alias_list_entries(
         if not alias_visible_for_allow(row, allow=allow):
             continue
         pref = (row.preferred_source or "").strip().lower()
-        if (
-            allowed_sources is not None
-            and pref
-            and pref not in allowed_sources
-        ):
-            # Preferred source not granted — skip unless unrestricted sources.
+        if allowed_sources is not None and pref and pref not in allowed_sources:
             continue
         target = (row.target_model_id or "").strip()
         if not target:
@@ -399,7 +402,6 @@ def alias_list_entries(
             arch = architecture_for_openai_payload(cat)
             if arch:
                 entry["architecture"] = arch
-        # Slots from preferred source, else the catalog row's source.
         src_for_slots = pref or (cat.source_name if cat is not None else "")
         if capacity_by_source and src_for_slots:
             cap = capacity_by_source.get(src_for_slots)
@@ -409,16 +411,78 @@ def alias_list_entries(
     return out
 
 
-def catalog_ids_for_picker(db: Session) -> list[str]:
-    """Distinct enabled chat/embed model ids for alias target dropdowns."""
+def alias_picker_meta(db: Session) -> dict[str, dict]:
+    """model_id → {kind, sources} for alias UI (Preferred + candidate filters).
+
+    Sources are only those that host this enabled model (same catalog kind).
+    """
+    from .config import MODEL_CHECK_KINDS
+
     rows = (
-        db.query(CatalogModel.model_id)
+        db.query(CatalogModel.model_id, CatalogModel.source_name, CatalogModel.kind)
         .filter(
             CatalogModel.enabled.is_(True),
-            CatalogModel.kind.in_(("chat", "embed")),
+            CatalogModel.kind.in_(tuple(MODEL_CHECK_KINDS)),
         )
-        .order_by(CatalogModel.model_id)
-        .distinct()
+        .order_by(CatalogModel.model_id, CatalogModel.source_name)
         .all()
     )
-    return [r[0] for r in rows if r[0]]
+    meta: dict[str, dict] = {}
+    for mid, src, kind in rows:
+        mid = (mid or "").strip()
+        if not mid:
+            continue
+        k = (kind or "chat").strip().lower() or "chat"
+        src = (src or "").strip()
+        entry = meta.get(mid)
+        if entry is None:
+            meta[mid] = {"kind": k, "sources": [src] if src else []}
+            continue
+        if k != entry["kind"]:
+            continue
+        if src and src not in entry["sources"]:
+            entry["sources"].append(src)
+    return meta
+
+
+def catalog_ids_for_picker(db: Session) -> list[str]:
+    """Distinct enabled model ids (all kinds) for alias dropdowns."""
+    return sorted(alias_picker_meta(db).keys())
+
+
+def preferred_sources_for_model(db: Session, model_id: str | None) -> list[str]:
+    """Sources that host ``model_id`` (correct Preferred dropdown options)."""
+    mid = (model_id or "").strip()
+    if not mid:
+        return []
+    entry = alias_picker_meta(db).get(mid)
+    if not entry:
+        return []
+    return list(entry.get("sources") or [])
+
+
+def normalize_preferred_source(
+    db: Session, model_id: str | None, preferred: str | None
+) -> str:
+    """Keep preferred only if it hosts the active model; else clear.
+
+    If the model is not in catalog yet (no hosts), keep the raw pin.
+    """
+    pref = (preferred or "").strip().lower()
+    if not pref:
+        return ""
+    hosts = preferred_sources_for_model(db, model_id)
+    if not hosts:
+        return pref[:64]
+    return pref if pref in hosts else ""
+
+
+def kind_for_model(db: Session, model_id: str | None) -> str:
+    mid = (model_id or "").strip()
+    if not mid:
+        return "chat"
+    entry = alias_picker_meta(db).get(mid)
+    if entry and entry.get("kind"):
+        return str(entry["kind"])
+    cat = _catalog_row_for_target(db, mid)
+    return (cat.kind if cat is not None else "chat") or "chat"

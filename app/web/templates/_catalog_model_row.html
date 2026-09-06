@@ -1,4 +1,4 @@
-{# Expects: m, vl, observed, pool_model_weights_enabled, gpu_power_enabled, suggest_docs_url, format_param_count, format_bytes #}
+    {# Expects: m, vl, observed, capacity, pool_model_weights_enabled, gpu_power_enabled, suggest_docs_url, format_param_count, format_bytes, format_slots_label #}
 <tr class="{% if vl %}catalog-row--pair{% endif %}{% if not m.enabled and m.disabled_by == 'sync' %} catalog-row--stale{% endif %}">
   <td>
     <div class="catalog-on-stack">
@@ -27,6 +27,10 @@
     {% endif %}
     <div class="muted hint-micro">
       <span class="badge">{{ m.source_name }}</span>
+      {% set cap = capacity.get(m.source_name) if capacity is defined and capacity else none %}
+      {% if cap and cap.slots_total is not none %}
+        · <span class="mono" title="Parallel slots for this source (shared by all its models)">{% if cap.slots_busy is not none %}{{ format_slots_label(cap.slots_busy, cap.slots_total) }}{% else %}slots {{ cap.slots_total }}{% endif %}</span>
+      {% endif %}
       {% if not m.enabled and m.disabled_by == 'sync' %}<span class="badge off">sync-disabled</span>{% endif %}
       {% if not m.enabled and m.disabled_by == 'admin' %}<span class="badge off">admin-off</span>{% endif %}
       {% if m.upstream_status %}
@@ -44,7 +48,11 @@
     </div>
   </td>
   <td class="muted meta-cell">
-    {% if m.ctx_size or m.n_ctx or m.n_ctx_train or m.n_embd or m.n_params or m.model_size or m.modalities_in or (vl and (vl.modalities_in or vl.modalities_out)) %}
+    {% if m.n_parallel or m.ctx_size or m.n_ctx or m.n_ctx_train or m.n_embd or m.n_params or m.model_size or m.modalities_in or (vl and (vl.n_parallel or vl.modalities_in or vl.modalities_out)) %}
+      {% if m.n_parallel %}<div title="Configured --parallel for this model (from router args; available unloaded)"><span class="mono">slots</span> {{ m.n_parallel }}</div>{% endif %}
+      {% if vl and vl.n_parallel and vl.n_parallel != m.n_parallel %}
+      <div class="catalog-vl-meta" title="VL sibling --parallel">VL slots {{ vl.n_parallel }}</div>
+      {% endif %}
       {% if m.ctx_size %}<div><span class="mono">ctx_size</span> {{ m.ctx_size }}</div>{% endif %}
       {% if m.n_ctx %}<div><span class="mono">n_ctx</span> {{ m.n_ctx }}{% if m.upstream_meta_at %} <span title="last known from meta">(last)</span>{% endif %}</div>{% endif %}
       {% if m.n_ctx_train %}<div><span class="mono">n_ctx_train</span> {{ m.n_ctx_train }}</div>{% endif %}
@@ -122,6 +130,20 @@
       {% if vl %}
       <label class="sr-only" for="docs-{{ vl.id }}">Docs URL for {{ vl.model_id }}</label>
       <input id="docs-{{ vl.id }}" class="input-docs" type="url" name="docs_{{ vl.id }}" value="{{ vl.docs_url }}" placeholder="{{ suggest_docs_url(vl.model_id) or 'https://huggingface.co/…' }}">
+      {% endif %}
+    </div>
+  </td>
+  <td>
+    <div class="catalog-field-stack">
+      <label class="sr-only" for="sampling-{{ m.id }}">recommended_sampling JSON for {{ m.model_id }}</label>
+      <textarea id="sampling-{{ m.id }}" class="input-sampling" name="sampling_{{ m.id }}" rows="3"
+                placeholder='{"thinking":{…},"instruct":{…}}'
+                title="GET /v1/models only — never applied to inference">{{ m.recommended_sampling }}</textarea>
+      {% if vl %}
+      <label class="sr-only" for="sampling-{{ vl.id }}">recommended_sampling JSON for {{ vl.model_id }}</label>
+      <textarea id="sampling-{{ vl.id }}" class="input-sampling" name="sampling_{{ vl.id }}" rows="3"
+                placeholder='{"thinking":{…},"instruct":{…}}'
+                title="VL sampling JSON">{{ vl.recommended_sampling }}</textarea>
       {% endif %}
     </div>
   </td>

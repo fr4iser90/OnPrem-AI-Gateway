@@ -11,6 +11,7 @@ from app.model_aliases import (
     alias_list_entries,
     apply_client_model_rewrites,
     candidate_model_ids,
+    detect_similar_models,
     family_matches,
     hidden_catalog_ids,
     infer_family_prefix,
@@ -37,6 +38,61 @@ def test_infer_family_prefix():
     assert infer_family_prefix("Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL-VL") == "Qwen3.6"
     assert infer_family_prefix("Qwen3.8-27B-UD-Q4_K_XL-MTP") == "Qwen3.8"
     assert infer_family_prefix("Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL") == "Qwen3-Coder"
+
+
+def test_detect_similar_models_includes_vl(tmp_path: Path):
+    db = _session(tmp_path)
+    for mid in (
+        "Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL-VL",
+        "Qwen3.6-35B-A3B-MTP-UD-Q5_K_XL-VL",
+        "Qwen3.6-35B-A3B-MTP-UD-Q4_K_M",
+        "Qwen3.8-27B-UD-Q4_K_XL-MTP",
+        "Other-Model-7B",
+    ):
+        db.add(
+            CatalogModel(
+                source_name="chat",
+                kind="chat",
+                model_id=mid,
+                enabled=True,
+            )
+        )
+    db.commit()
+    prefix, models = detect_similar_models(
+        db,
+        model_id="Qwen3.6-35B-A3B-MTP-UD-Q5_K_XL-VL",
+        alias_id="qwen3.6",
+    )
+    assert prefix == "Qwen3.6"
+    assert "Qwen3.6-35B-A3B-MTP-UD-Q5_K_XL-VL" in models
+    assert "Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL-VL" in models
+    assert "Qwen3.6-35B-A3B-MTP-UD-Q4_K_M" in models
+    assert "Qwen3.8-27B-UD-Q4_K_XL-MTP" not in models
+    assert "Other-Model-7B" not in models
+
+
+def test_family_matches_slot_tag(tmp_path: Path):
+    db = _session(tmp_path)
+    db.add(
+        CatalogModel(
+            source_name="chat",
+            kind="chat",
+            model_id="WeirdName-Q4",
+            enabled=True,
+            tags="slot:smart, tools",
+        )
+    )
+    db.add(
+        CatalogModel(
+            source_name="chat",
+            kind="chat",
+            model_id="Unrelated-7B",
+            enabled=True,
+            tags="tools",
+        )
+    )
+    db.commit()
+    assert family_matches(db, alias_id="smart") == ["WeirdName-Q4"]
 
 
 def test_resolve_and_rewrite(tmp_path: Path):
@@ -114,67 +170,45 @@ def test_alias_preferred_source_routes_to_named_upstream(tmp_path: Path):
     assert pick.name == "chat2"
 
 
-def test_suggest_family_and_hide_candidates(tmp_path: Path):
+def test_preferred_sources_only_hosts_of_active_model(tmp_path: Path):
+    from app.model_aliases import (
+        normalize_preferred_source,
+        preferred_sources_for_model,
+    )
+
     db = _session(tmp_path)
-    for mid in (
-        "Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL-VL",
-        "Qwen3.6-35B-A3B-MTP-UD-Q5_K_XL-VL",
-        "Qwen3.6-35B-A3B-MTP-UD-Q4_K_M",
-        "Qwen3.8-27B-UD-Q4_K_XL-MTP",
-        "Other-Model-7B",
-    ):
-        db.add(
-            CatalogModel(
-                source_name="chat2",
-                kind="chat",
-                model_id=mid,
-                enabled=True,
-            )
-        )
+    db.add(CatalogModel(source_name="chat", kind="chat", model_id="M", enabled=True))
+    db.add(CatalogModel(source_name="chat2", kind="chat", model_id="M", enabled=True))
+    db.add(CatalogModel(source_name="stt", kind="stt", model_id="whisper", enabled=True))
+    db.commit()
+    assert preferred_sources_for_model(db, "M") == ["chat", "chat2"]
+    assert preferred_sources_for_model(db, "whisper") == ["stt"]
+    assert normalize_preferred_source(db, "M", "stt") == ""
+    assert normalize_preferred_source(db, "M", "chat2") == "chat2"
+    row = upsert_alias(
+        db, alias_id="w", target_model_id="whisper", preferred_source="chat"
+    )
+    assert row is not None
+    assert row.preferred_source == ""
+    assert row.kind == "stt"
+
+
+def test_manual_candidates_and_hide(tmp_path: Path):
+    db = _session(tmp_path)
+    for mid in ("A-Q4", "A-Q5", "Other-7B"):
+        db.add(CatalogModel(source_name="chat", kind="chat", model_id=mid, enabled=True))
     row = upsert_alias(
         db,
-        alias_id="qwen3.6",
-        target_model_id="Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL-VL",
-        preferred_source="chat",
-        suggest_family=True,
+        alias_id="humbuck",
+        target_model_id="A-Q4",
+        candidates=["A-Q4", "A-Q5"],
         hide_candidates=True,
     )
     db.commit()
-    assert row is not None
-    cands = candidate_model_ids(row)
-    assert "Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL-VL" in cands
-    assert "Qwen3.6-35B-A3B-MTP-UD-Q5_K_XL-VL" in cands
-    assert "Qwen3.6-35B-A3B-MTP-UD-Q4_K_M" in cands
-    assert "Qwen3.8-27B-UD-Q4_K_XL-MTP" not in cands
-    assert row.family_prefix == "Qwen3.6"
-
+    assert candidate_model_ids(row) == ["A-Q4", "A-Q5"]
     hidden = hidden_catalog_ids(db)
-    assert "Qwen3.6-35B-A3B-MTP-UD-Q5_K_XL-VL" in hidden
-    assert "Qwen3.8-27B-UD-Q4_K_XL-MTP" not in hidden
-
-
-def test_family_matches_slot_tag(tmp_path: Path):
-    db = _session(tmp_path)
-    db.add(
-        CatalogModel(
-            source_name="chat",
-            kind="chat",
-            model_id="WeirdName-Q4",
-            enabled=True,
-            tags="slot:smart, tools",
-        )
-    )
-    db.add(
-        CatalogModel(
-            source_name="chat",
-            kind="chat",
-            model_id="Unrelated-7B",
-            enabled=True,
-            tags="tools",
-        )
-    )
-    db.commit()
-    assert family_matches(db, alias_id="smart") == ["WeirdName-Q4"]
+    assert "A-Q4" in hidden and "A-Q5" in hidden
+    assert "Other-7B" not in hidden
 
 
 def test_switch_active_candidate(tmp_path: Path):

@@ -21,8 +21,8 @@ ENV PYTHONUNBUFFERED=1 \
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD curl -fsS "http://127.0.0.1:${PORT}/healthz" || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+  CMD curl -fsS --max-time 8 "http://127.0.0.1:${PORT}/healthz" || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]

@@ -1,0 +1,104 @@
+{
+  "Qwen3.8-Flash-Next": {
+    "default_profile": "thinking",
+    "thinking": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 0.0,
+      "repetition_penalty": 1.0,
+      "enable_thinking": true,
+      "preserve_thinking": true,
+      "reasoning_effort": "medium"
+    },
+    "instruct": {
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 1.5,
+      "repetition_penalty": 1.0,
+      "enable_thinking": false,
+      "preserve_thinking": false
+    }
+  },
+  "Qwen3.8-27B": {
+    "default_profile": "thinking",
+    "thinking": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 0.0,
+      "repetition_penalty": 1.0,
+      "enable_thinking": true,
+      "preserve_thinking": true,
+      "reasoning_effort": "medium"
+    },
+    "instruct": {
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 1.5,
+      "repetition_penalty": 1.0,
+      "enable_thinking": false,
+      "preserve_thinking": false
+    }
+  },
+  "Qwen3.6-35B": {
+    "default_profile": "thinking",
+    "thinking": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 1.5,
+      "repetition_penalty": 1.0,
+      "enable_thinking": true,
+      "preserve_thinking": true,
+      "reasoning_effort": "medium"
+    },
+    "instruct": {
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 1.5,
+      "repetition_penalty": 1.0,
+      "enable_thinking": false,
+      "preserve_thinking": false
+    }
+  },
+  "Qwen3-Coder-30B": {
+    "default_profile": "instruct",
+    "instruct": {
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "min_p": 0.0,
+      "repetition_penalty": 1.05
+    }
+  },
+  "Qwen3-8B": {
+    "default_profile": "thinking",
+    "thinking": {
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0,
+      "enable_thinking": true,
+      "preserve_thinking": true,
+      "reasoning_effort": "medium"
+    },
+    "instruct": {
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "min_p": 0.0,
+      "enable_thinking": false,
+      "preserve_thinking": false
+    }
+  }
+}

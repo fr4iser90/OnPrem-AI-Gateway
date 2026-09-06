@@ -65,6 +65,7 @@ def _keys_list_url(*, owner_user_id: int | None = None, api_key: ApiKey | None =
 
 def _apply_key_routing_from_form(api_key: ApiKey, form, db: Session) -> None:
     from ...data.routing_strategy import normalize_routing_strategy
+    from ...sampling_merge import normalize_key_sampling_profile
 
     names = set(source_names(db))
     raw_strat = (form.get("routing_strategy") or "").strip()
@@ -73,6 +74,9 @@ def _apply_key_routing_from_form(api_key: ApiKey, form, db: Session) -> None:
     )
     pref = str(form.get("preferred_source") or "").strip().lower()
     api_key.preferred_source = pref if pref in names else None
+    api_key.sampling_profile = normalize_key_sampling_profile(
+        str(form.get("sampling_profile") or "")
+    )
 
 
 @router.get("/keys", response_class=HTMLResponse)

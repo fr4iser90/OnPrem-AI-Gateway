@@ -27,6 +27,7 @@ def services_page(
     from ...data.backends import catalog_route_models, hardware_labels, source_rows
     from ...data.capabilities import engine_choices
     from ...data.probe import probe_all
+    from ...data.source_capacity import format_slots_label
 
     settings = _settings(request)
     rows = source_rows(db, settings)
@@ -57,6 +58,7 @@ def services_page(
             "flash_ok": flash_ok,
             "flash_err": flash_err,
             "can_edit": True,
+            "format_slots_label": format_slots_label,
         },
     )
 

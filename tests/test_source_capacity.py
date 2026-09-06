@@ -13,6 +13,7 @@ from app.data.source_capacity import (
     _merge_capacity,
     attach_capacity,
     capacity_fields,
+    format_slots_label,
 )
 from app.data.source_load import SourceLoadSnapshot
 from app.model_aliases import alias_list_entries, upsert_alias
@@ -22,6 +23,14 @@ def _session(tmp_path: Path):
     eng = make_engine(str(tmp_path / "cap.db"))
     Base.metadata.create_all(bind=eng)
     return make_session_factory(eng)()
+
+
+def test_format_slots_label():
+    assert format_slots_label(0, 4) == "0/4 in use"
+    assert format_slots_label(2, 4) == "2/4 in use"
+    assert format_slots_label(4, 4) == "all slots full (4/4)"
+    assert format_slots_label(None, 4) == "slots 4"
+    assert format_slots_label(1, None) == "—"
 
 
 def test_capacity_fields_and_attach():
@@ -45,7 +54,7 @@ def test_capacity_fields_and_attach():
     assert entry["slots_idle"] == 2
 
 
-def test_merge_prefers_max_concurrency_and_gateway_inflight(tmp_path: Path):
+def test_merge_prefers_probe_idle_over_gateway_inflight(tmp_path: Path):
     db = _session(tmp_path)
     src = upsert_source(
         db,
@@ -57,22 +66,51 @@ def test_merge_prefers_max_concurrency_and_gateway_inflight(tmp_path: Path):
     db.commit()
     snap = SourceLoadSnapshot(
         state="ok",
-        slots_total=8,  # engine reports more; admin cap wins
-        slots_idle=7,
+        slots_total=8,  # engine reports more; admin cap wins for total
+        slots_idle=1,  # upstream: 2 of 3 busy under admin cap
         probed_at=0,
         engine="llamacpp",
     )
-    # Simulate one admitted stream on this address.
+    # Gateway only sees 1 stream; upstream probe is authoritative for UI.
     assert source_admission_gate.acquire(
         "127.0.0.1:11535", limit=3, key_id=1, priority=0, timeout=0.1
     )
     try:
         cap = _merge_capacity(src, snap)
         assert cap.slots_total == 3
-        assert cap.slots_busy == 1
-        assert cap.slots_idle == 2
+        assert cap.slots_busy == 2
+        assert cap.slots_idle == 1
     finally:
         source_admission_gate.release("127.0.0.1:11535")
+
+
+def test_probe_model_for_source_prefers_loaded(tmp_path: Path):
+    from app.data.source_capacity import probe_model_for_source
+
+    db = _session(tmp_path)
+    upsert_source(db, name="coder", kind="chat", address="127.0.0.1:11538")
+    db.add(
+        CatalogModel(
+            source_name="coder",
+            kind="chat",
+            model_id="other",
+            enabled=True,
+            upstream_status="unloaded",
+            n_parallel=4,
+        )
+    )
+    db.add(
+        CatalogModel(
+            source_name="coder",
+            kind="chat",
+            model_id="Qwen3-Coder",
+            enabled=True,
+            upstream_status="loaded",
+            n_parallel=2,
+        )
+    )
+    db.commit()
+    assert probe_model_for_source(db, "coder") == "Qwen3-Coder"
 
 
 def test_openai_payload_includes_slots(tmp_path: Path):

@@ -32,7 +32,7 @@
       <span class="fleet-chip-meta">{{ hardware_by_name.get(s.service) }}</span>
       {% endif %}
       {% if s.slots_total is not none %}
-      <span class="fleet-chip-meta">{{ s.slots_busy }}/{{ s.slots_total }} busy</span>
+      <span class="fleet-chip-meta">{{ format_slots_label(s.slots_busy, s.slots_total) }}</span>
       {% elif s.gpu_power == 'ok' and s.gpu_watts is not none %}
       <span class="fleet-chip-meta">{{ '%.0f'|format(s.gpu_watts) }}W</span>
       {% endif %}

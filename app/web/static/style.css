@@ -2283,6 +2283,35 @@ textarea { min-height: 110px; font-family: var(--mono); font-size: 0.85rem; }
 .input-weight { width: 4.5rem; }
 .input-note { min-width: 11rem; }
 .input-docs { min-width: 12rem; }
+.input-sampling {
+  min-width: 14rem;
+  max-width: 22rem;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+  line-height: 1.35;
+  resize: vertical;
+}
+.input-sampling-import {
+  width: 100%;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  resize: vertical;
+}
+.import-sampling-form { margin-top: 0.5rem; }
+.import-sampling-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  margin-top: 0.5rem;
+}
+.check-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+}
 
 .catalog-row--pair td {
   vertical-align: top;
@@ -2361,68 +2390,123 @@ textarea { min-height: 110px; font-family: var(--mono); font-size: 0.85rem; }
 }
 
 /* Public alias slots (Models page) */
+.alias-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin-top: 1rem;
+}
 .alias-card {
-  margin-bottom: 0.85rem;
-  padding: 0.85rem 1rem;
+  margin: 0;
+  padding: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg);
 }
-.panel.alias-card,
-.panel.panel--nested.alias-card {
-  box-shadow: none;
-}
-.alias-card-head {
+.alias-card-summary {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.65rem 1rem;
-  margin-bottom: 0.75rem;
+  gap: 0.5rem 0.85rem;
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  list-style: none;
+}
+.alias-card-summary::-webkit-details-marker {
+  display: none;
 }
 .alias-card-id {
   font-weight: 600;
   font-size: 1.05rem;
-  margin-right: auto;
 }
-.alias-card-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
+.alias-card-active {
   font-size: 0.85rem;
-  color: var(--text);
-  white-space: nowrap;
+}
+.alias-card-badges {
+  margin-left: auto;
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+.alias-card-body {
+  padding: 0 1rem 1rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.85rem;
 }
 .alias-card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
   gap: 0.65rem 0.85rem;
 }
-.alias-card-grid .field--wide {
+.alias-card-grid .field--wide,
+.alias-card-body > .field--wide {
   grid-column: 1 / -1;
+  margin-top: 0.75rem;
 }
-.alias-card-grid .field label {
+.alias-card-grid .field label,
+.alias-card-body .field label {
   display: block;
   font-size: 0.75rem;
   color: var(--muted);
   margin-bottom: 0.2rem;
 }
-.alias-card-grid textarea.mono {
-  width: 100%;
-  min-height: 4.5rem;
-  font-size: 0.8rem;
-  line-height: 1.35;
+.alias-card-toggles {
+  display: none; /* legacy — flags use badge-toggle row */
+}
+.alias-flag-row {
+  margin-top: 0.35rem;
+  gap: 0.4rem;
+}
+button.badge.badge-toggle {
+  cursor: pointer;
+  border: none;
+  font: inherit;
+  appearance: none;
+  -webkit-appearance: none;
+}
+button.badge.badge-toggle:hover {
+  filter: brightness(1.12);
+}
+button.badge.badge-toggle:focus-visible {
+  outline: 2px solid var(--accent, #3d9);
+  outline-offset: 2px;
+}
+.alias-cand-chips {
+  margin: 0.35rem 0 0.5rem;
+}
+.alias-cand-chips .badge.mono {
+  max-width: 28rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.alias-cand-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.alias-cand-add select {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+.alias-add-defaults {
+  margin: 0.65rem 0 0;
+}
+.alias-add-defaults .badge {
+  margin-right: 0.15rem;
 }
 .alias-card-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.65rem;
-  margin-top: 0.65rem;
+  margin-top: 0.85rem;
 }
 .alias-add {
-  margin-top: 1.25rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--border);
+  margin-top: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
 }
 .alias-add-flags {
   display: flex;
@@ -2436,6 +2520,12 @@ textarea { min-height: 110px; font-family: var(--mono); font-size: 0.85rem; }
   align-items: center;
   gap: 0.3rem;
   font-size: 0.85rem;
+}
+.badge-muted {
+  opacity: 0.65;
+}
+.flash-err {
+  color: var(--danger, #c44);
 }
 .svc-dialect select {
   max-width: 12rem;

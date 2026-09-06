@@ -20,8 +20,9 @@
     <strong>ctx_size</strong> comes from upstream <span class="mono">--ctx-size</span> when listed.
     <strong>context_length</strong> in <span class="mono">GET /v1/models</span> mirrors <span class="mono">ctx_size</span> (OpenRouter-style for Continue/OpenCode).
     <strong>n_ctx / n_embd / n_params</strong> from upstream <span class="mono">meta</span> while loaded —
-    last known values kept after unload (never invented). Tags/notes/docs are admin-owned; sync does not overwrite non-empty tags.
-    STT/TTS usually expose no numeric meta.
+    Tags/notes/docs/<span class="mono">recommended_sampling</span> are admin-owned; sync does not overwrite them.
+    Sampling JSON is listed on <span class="mono">GET /v1/models</span> for clients.
+    Soft-fill of missing request fields is off by default (Settings → Routing).
   </p>
   {% if pool_model_weights_enabled %}
   <p class="muted hint-after">
@@ -41,6 +42,16 @@
   <p class="muted hint-after">
     <strong>Observed</strong> (7d fleet): mean PP/TG tok/s and watts from OnPrem AI Gateway-metered OK chats.
     Empty until traffic hits that model through OnPrem AI Gateway.
+    <strong>n</strong> = sample count (OK requests), not slots.
+  </p>
+  <p class="muted hint-after">
+    <strong>Slots</strong>: live <span class="mono">N/M in use</span> (or <span class="mono">all slots full</span>)
+    next to the source badge when the
+    instance is loaded; configured <span class="mono">slots N</span> under Source meta from
+    <span class="mono">--parallel</span> in router args (works unloaded too).
+    <strong>loaded / unloaded</strong> refresh automatically when you open this page (light probe) —
+    full <strong>Sync from sources</strong> discovers new models / meta / prune
+    (or enable auto-sync under <a href="/settings/routing">Settings → Routing</a>).
   </p>
 </details>
 {% if weight_status is defined and weight_status.ready and not pool_model_weights_enabled %}
@@ -69,131 +80,91 @@
   </span>
 </div>
 
-<section class="panel">
+<details class="panel panel-details" id="import-sampling">
+  <summary>Import <span class="mono">recommended_sampling</span> (JSON)</summary>
+  <p class="muted hint-after">
+    One-shot fill for catalog rows. Keys are matched as <strong>longest substring</strong> of
+    <span class="mono">model_id</span> (case-insensitive). Example file:
+    <span class="mono">docs/examples/recommended_sampling_qwen.json</span>.
+    Clients read the result from <span class="mono">GET /v1/models</span>.
+    Soft-fill of missing chat sampling (Settings → Routing) uses
+    <span class="mono">default_profile</span> / client hints — never overrides set fields.
+  </p>
+  <form method="post" action="/models/import-sampling" class="import-sampling-form">
+    <label class="sr-only" for="sampling_json">recommended_sampling JSON</label>
+    <textarea id="sampling_json" name="sampling_json" class="input-sampling-import" rows="10"
+              placeholder='{"Qwen3.8-Flash-Next":{"thinking":{...},"instruct":{...}}}'></textarea>
+    <div class="import-sampling-actions">
+      <label class="check-inline">
+        <input type="checkbox" name="overwrite" value="1">
+        Overwrite existing values
+      </label>
+      <button class="btn" type="submit">Import sampling</button>
+    </div>
+  </form>
+</details>
+
+<section class="panel" id="public-aliases" data-aliases-root
+         data-alias-meta='{{ alias_picker_meta|tojson }}'>
   <h2>Public aliases</h2>
   <p class="muted mt-0 text-sm">
-    Stable client ids (e.g. <span class="mono">qwen3.6</span>) rewrite to one active catalog model.
-    Keep a <strong>candidate pool</strong> of variants; switch the active one via the dropdown.
-    With <strong>hide others</strong>, candidates disappear from <span class="mono">GET /v1/models</span>
-    so clients see one id per slot. Optional <strong>preferred source</strong> pins the upstream.
-    Tag catalog rows <span class="mono">slot:qwen3.6</span> to include them in family suggest.
+    Client name → one active model (chat / embed / stt / tts).
+    <strong>Preferred source</strong> = pin only among sources that host that model (same kind); leave — unless you need a fixed box.
+    Flags: <span class="badge ok">on</span> ·
+    <span class="badge">hide list</span> ·
+    <span class="badge">show target</span>.
   </p>
-  {% if aliases %}
-  <form method="post" action="/models/aliases/save">
-    {% for a in aliases %}
-    {% set cands = alias_candidates.get(a.id, []) %}
-    <div class="alias-card panel panel--nested">
-      <div class="alias-card-head">
-        <span class="mono alias-card-id">{{ a.alias_id }}</span>
-        <label class="alias-card-toggle"><input type="checkbox" name="enabled_{{ a.id }}" {% if a.enabled %}checked{% endif %}> On</label>
-        <label class="alias-card-toggle"><input type="checkbox" name="hide_{{ a.id }}" {% if a.hide_candidates %}checked{% endif %}> Hide others</label>
-        <label class="alias-card-toggle"><input type="checkbox" name="show_{{ a.id }}" {% if a.show_backend %}checked{% endif %}> Show backend</label>
-        <button class="btn-sm" type="submit" name="delete_id" value="{{ a.id }}"
-                formaction="/models/aliases/delete"
-                formmethod="post"
-                onclick="return confirm('Delete alias {{ a.alias_id }}?');">Delete</button>
-      </div>
-      <div class="alias-card-grid">
-        <div class="field">
-          <label for="target_{{ a.id }}">Active model</label>
-          <select class="mono" id="target_{{ a.id }}" name="target_{{ a.id }}" required>
-            {% set opts = alias_target_options.get(a.id, cands) %}
-            {% for mid in opts %}
-            <option value="{{ mid }}" {% if a.target_model_id == mid %}selected{% endif %}>{{ mid }}</option>
-            {% endfor %}
-            {% if not opts and a.target_model_id %}
-            <option value="{{ a.target_model_id }}" selected>{{ a.target_model_id }}</option>
-            {% endif %}
-          </select>
-        </div>
-        <div class="field">
-          <label for="source_{{ a.id }}">Preferred source</label>
-          <select id="source_{{ a.id }}" name="source_{{ a.id }}">
-            <option value="" {% if not a.preferred_source %}selected{% endif %}>—</option>
-            {% for chip in source_names %}
-            <option value="{{ chip }}" {% if a.preferred_source == chip %}selected{% endif %}>{{ chip }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div class="field">
-          <label for="sort_{{ a.id }}">Sort</label>
-          <input type="number" id="sort_{{ a.id }}" name="sort_{{ a.id }}" value="{{ a.sort_order }}" min="0" step="1">
-        </div>
-        <div class="field">
-          <label for="desc_{{ a.id }}">Note</label>
-          <input type="text" id="desc_{{ a.id }}" name="desc_{{ a.id }}" value="{{ a.description }}" placeholder="Daily VL">
-        </div>
-        <div class="field">
-          <label for="family_{{ a.id }}">Family prefix</label>
-          <input class="mono" type="text" id="family_{{ a.id }}" name="family_{{ a.id }}" value="{{ a.family_prefix }}" placeholder="Qwen3.6">
-        </div>
-        <div class="field field--wide">
-          <label for="candidates_{{ a.id }}">Candidates <span class="muted">(one per line)</span></label>
-          <textarea class="mono" id="candidates_{{ a.id }}" name="candidates_{{ a.id }}" rows="{{ [cands|length, 3]|max }}">{{ cands|join('\n') }}</textarea>
-        </div>
-      </div>
-      <div class="alias-card-actions">
-        <button class="btn-sm" type="submit" name="alias_row_id" value="{{ a.id }}"
-                formaction="/models/aliases/suggest"
-                formmethod="post">Suggest family</button>
-        <span class="muted text-sm">{{ cands|length }} candidate{{ 's' if cands|length != 1 else '' }} · active → <span class="mono">{{ a.target_model_id }}</span></span>
-      </div>
-    </div>
-    {% endfor %}
-    <button class="primary field-gap-sm" type="submit">Save aliases</button>
-  </form>
-  {% else %}
-  <p class="muted">No aliases yet — add one below.</p>
-  {% endif %}
-  <form method="post" action="/models/aliases/add" class="field-gap-md alias-add">
-    <h3 class="section-label">Add alias slot</h3>
+
+  <form id="alias-add-form" class="alias-add" action="/models/aliases/add" method="post">
+    <h3 class="section-label">Add alias</h3>
     <div class="alias-card-grid">
       <div class="field">
-        <label for="alias_id">Alias id</label>
-        <input class="mono" id="alias_id" type="text" name="alias_id" required placeholder="qwen3.6" pattern="[a-z0-9][a-z0-9._-]{0,126}">
+        <label for="alias_id">Alias name</label>
+        <input class="mono" id="alias_id" type="text" name="alias_id" required
+               placeholder="qwen3.6" pattern="[a-z0-9][a-z0-9._-]{0,126}" autocomplete="off">
       </div>
       <div class="field">
         <label for="target_model_id">Active model</label>
         {% if catalog_model_ids %}
-        <select class="mono" id="target_model_id" name="target_model_id" required>
+        <select class="mono" id="target_model_id" name="target_model_id" required data-alias-add-target>
           <option value="" disabled selected>Select…</option>
           {% for mid in catalog_model_ids %}
           <option value="{{ mid }}">{{ mid }}</option>
           {% endfor %}
         </select>
         {% else %}
-        <input class="mono" id="target_model_id" type="text" name="target_model_id" required placeholder="Qwen3.6-…-Q4_K_XL-VL">
+        <input class="mono" id="target_model_id" type="text" name="target_model_id" required placeholder="model id" data-alias-add-target>
         {% endif %}
       </div>
       <div class="field">
-        <label for="preferred_source">Preferred source</label>
-        <select id="preferred_source" name="preferred_source">
+        <label for="preferred_source">Preferred source <span class="muted">(hosts of Active)</span></label>
+        <select id="preferred_source" name="preferred_source" data-alias-add-source>
           <option value="">—</option>
-          {% for chip in source_names %}
-          <option value="{{ chip }}">{{ chip }}</option>
-          {% endfor %}
         </select>
       </div>
-      <div class="field">
-        <label for="family_prefix">Family prefix</label>
-        <input class="mono" id="family_prefix" type="text" name="family_prefix" placeholder="Qwen3.6 (optional)">
-      </div>
-      <div class="field">
-        <label for="description">Note</label>
-        <input id="description" type="text" name="description" placeholder="Daily default (VL)">
-      </div>
-      <div class="field">
-        <label for="sort_order">Sort</label>
-        <input id="sort_order" type="number" name="sort_order" value="0" min="0" step="1">
-      </div>
     </div>
+    <p class="muted text-sm alias-add-defaults">
+      New aliases start as
+      <span class="badge ok">on</span>
+      <span class="badge">hide list</span>
+      <span class="badge">show target</span>
+      — change flags after add.
+    </p>
     <div class="alias-add-flags">
-      <label><input type="checkbox" name="hide_candidates" checked> hide others in /v1/models</label>
-      <label><input type="checkbox" name="show_backend" checked> show backend in /v1/models</label>
-      <label><input type="checkbox" name="suggest_family" checked> suggest family candidates</label>
       <button class="primary" type="submit">Add alias</button>
+      <span class="muted text-sm" id="alias-add-status" hidden></span>
     </div>
   </form>
+
+  <div id="alias-list" class="alias-list">
+    {% for a in aliases %}
+      {% with a=a, cands=alias_candidates.get(a.id, []), catalog_model_ids=catalog_model_ids, source_names=alias_pref_sources.get(a.id, []), open=false %}
+        {% include "partials/_alias_card.html" %}
+      {% endwith %}
+    {% else %}
+    <p class="muted" id="alias-empty">No aliases yet.</p>
+    {% endfor %}
+  </div>
 </section>
 
 {% if groups %}
@@ -231,6 +202,7 @@
           {% endif %}
           <th>Note</th>
           <th>Docs URL</th>
+          <th title="GET /v1/models; soft-fill only if Settings → Routing enables it">Sampling</th>
         </tr>
       </thead>
       <tbody>
@@ -238,7 +210,7 @@
         {% include "_catalog_model_row.html" %}
       {% else %}
         <tr class="catalog-row--empty">
-          <td colspan="{% if pool_model_weights_enabled %}8{% else %}7{% endif %}" class="muted">
+          <td colspan="{% if pool_model_weights_enabled %}9{% else %}8{% endif %}" class="muted">
             No active models — expand “not on upstream” below, or sync from sources.
           </td>
         </tr>
@@ -265,6 +237,7 @@
             {% endif %}
             <th>Note</th>
             <th>Docs URL</th>
+            <th>Sampling</th>
           </tr>
         </thead>
         <tbody>
@@ -318,4 +291,5 @@
   });
 })();
 </script>
+<script src="/static/models_aliases.js"></script>
 {% endblock %}

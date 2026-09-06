@@ -102,6 +102,7 @@ def _ensure_columns(eng) -> None:
             ("owner_user_id", "INTEGER"),
             ("routing_strategy", "VARCHAR(32)"),
             ("preferred_source", "VARCHAR(64)"),
+            ("sampling_profile", "VARCHAR(32) DEFAULT ''"),
         ],
         "auth_settings": [
             ("teams_enabled", "BOOLEAN DEFAULT 0"),
@@ -127,6 +128,9 @@ def _ensure_columns(eng) -> None:
             ("source_admission_enabled", "BOOLEAN DEFAULT 1"),
             ("source_queue_timeout_sec", "INTEGER DEFAULT 30"),
             ("catalog_prune_on_sync", "BOOLEAN DEFAULT 1"),
+            ("soft_sampling_defaults", "BOOLEAN DEFAULT 0"),
+            ("catalog_auto_sync", "BOOLEAN DEFAULT 0"),
+            ("catalog_auto_sync_minutes", "INTEGER DEFAULT 30"),
             ("default_grant_sources", "TEXT DEFAULT ''"),
             ("default_grant_models", "TEXT DEFAULT ''"),
             ("show_global_stats", "BOOLEAN DEFAULT 0"),
@@ -164,8 +168,10 @@ def _ensure_columns(eng) -> None:
             ("tags", "VARCHAR(512) DEFAULT ''"),
             ("short_note", "VARCHAR(512) DEFAULT ''"),
             ("docs_url", "VARCHAR(512) DEFAULT ''"),
+            ("recommended_sampling", "TEXT DEFAULT ''"),
             ("upstream_status", "VARCHAR(32) DEFAULT ''"),
             ("ctx_size", "INTEGER"),
+            ("n_parallel", "INTEGER"),
             ("n_ctx", "INTEGER"),
             ("n_ctx_train", "INTEGER"),
             ("n_embd", "INTEGER"),
@@ -179,7 +185,6 @@ def _ensure_columns(eng) -> None:
         ],
         "model_aliases": [
             ("hide_candidates", "BOOLEAN DEFAULT 1"),
-            ("family_prefix", "VARCHAR(128) DEFAULT ''"),
             ("kind", "VARCHAR(16) DEFAULT 'chat'"),
             ("sort_order", "INTEGER DEFAULT 0"),
             ("show_backend", "BOOLEAN DEFAULT 1"),
@@ -441,6 +446,9 @@ def init_db(settings: Settings) -> None:
                     source_admission_enabled=True,
                     source_queue_timeout_sec=30,
                     catalog_prune_on_sync=True,
+                    soft_sampling_defaults=False,
+                    catalog_auto_sync=False,
+                    catalog_auto_sync_minutes=30,
                 )
             )
         from .backends import seed_backends_from_env

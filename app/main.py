@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 
 import httpx
@@ -166,6 +167,16 @@ def _preflight_block(
         headers={"Retry-After": str(pf.retry_after)},
     )
 
+
+async def _source_admission_block_async(**kwargs) -> JSONResponse | None:
+    """Admission may wait up to queue_timeout (default 30s) — never on the event loop."""
+    return await asyncio.to_thread(lambda: _source_admission_block(**kwargs))
+
+
+async def _preflight_block_async(**kwargs) -> JSONResponse | None:
+    """Upstream probe is sync httpx — never on the event loop."""
+    return await asyncio.to_thread(lambda: _preflight_block(**kwargs))
+
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="OnPrem AI Gateway", docs_url=None, redoc_url=None)
@@ -188,6 +199,9 @@ def create_app() -> FastAPI:
         print(f"OnPrem API:   http://127.0.0.1:{api_port}", flush=True)
         ph = (settings.public_host or "").strip() or f"127.0.0.1:{api_port}"
         print(f"  example:    http://{ph}/v1/chat/completions  (+ X-Api-Key)", flush=True)
+        from .catalog_auto_sync import start_catalog_auto_sync
+
+        start_catalog_auto_sync()
 
     static_dir = Path(__file__).parent / "web" / "static"
     static_dir.mkdir(parents=True, exist_ok=True)
@@ -286,7 +300,8 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/healthz")
-    def healthz():
+    async def healthz():
+        # async: never waits on the sync-endpoint threadpool (UI probes / DB work).
         from . import __version__
 
         return {"status": "ok", "version": __version__}
@@ -337,7 +352,7 @@ def create_app() -> FastAPI:
         if not restricted:
             allow_union = None
 
-        # Probe unique sources for slot capacity (cached ~3s).
+        # Slot fields from load-cache / admission only — no live probes on list.
         slot_sources: set[str] = {r.source_name for r in rows}
         from .data.models import CatalogModel
 
@@ -359,7 +374,7 @@ def create_app() -> FastAPI:
             )
             if cat is not None:
                 slot_sources.add(cat.source_name)
-        capacity = capacities_by_source(db, slot_sources, probe=True)
+        capacity = capacities_by_source(db, slot_sources, probe=False)
 
         payload = openai_models_payload(rows, capacity_by_source=capacity)
         hidden = hidden_catalog_ids(db)
@@ -514,7 +529,7 @@ def create_app() -> FastAPI:
         # VL-only: body rewrite needs a second hop (stock nginx cannot patch JSON).
         # Chat metering uses /v1/onprem/entry (see nginx) — not auth_request+forward.
         if vl_rewrite:
-            pf_block = _preflight_block(
+            pf_block = await _preflight_block_async(
                 auth_cfg=get_auth_settings(db),
                 backend=backend,
                 kind=kind,
@@ -525,7 +540,7 @@ def create_app() -> FastAPI:
             )
             if pf_block is not None:
                 return pf_block
-            adm_block = _source_admission_block(
+            adm_block = await _source_admission_block_async(
                 auth_cfg=get_auth_settings(db),
                 src=src_row,
                 backend=backend,
@@ -802,7 +817,7 @@ def create_app() -> FastAPI:
             return JSONResponse({"error": "backend_not_configured"}, status_code=503)
 
         src_row = get_source_by_name(db, service)
-        pf_block = _preflight_block(
+        pf_block = await _preflight_block_async(
             auth_cfg=auth_cfg,
             backend=backend,
             kind=kind,
@@ -813,7 +828,7 @@ def create_app() -> FastAPI:
         )
         if pf_block is not None:
             return pf_block
-        adm_block = _source_admission_block(
+        adm_block = await _source_admission_block_async(
             auth_cfg=auth_cfg,
             src=src_row,
             backend=backend,
@@ -831,6 +846,24 @@ def create_app() -> FastAPI:
         final_model = vl_rewrite or auto_rewrite
         if final_model:
             body = rewrite_json_model(body, final_model)
+        if kind == "chat" and body and getattr(auth_cfg, "soft_sampling_defaults", False):
+            from .sampling_merge import soft_sampling_body
+
+            mid = final_model or result.model or extract_model(body, content_type)
+            key_prof = ""
+            if result.api_key is not None:
+                key_prof = getattr(result.api_key, "sampling_profile", "") or ""
+            filled = soft_sampling_body(
+                db,
+                body,
+                content_type,
+                model_id=mid,
+                headers=request.headers,
+                enabled=True,
+                key_profile=key_prof,
+            )
+            if filled is not None:
+                body = filled
 
         url = f"http://{backend}{rewrite_uri}"
         if request.url.query:
@@ -905,7 +938,8 @@ def create_app() -> FastAPI:
             for k, v in request.headers.items()
             if k.lower() not in hop
         }
-        up_headers["content-type"] = request.headers.get("content-type") or "application/json"
+        content_type = request.headers.get("content-type") or "application/json"
+        up_headers["content-type"] = content_type
         up_headers["content-length"] = str(len(body))
 
         from .data.backends import get_source_by_name
@@ -925,11 +959,41 @@ def create_app() -> FastAPI:
                 if src is not None:
                     kind = src.kind or "chat"
                 auth_cfg = get_auth_settings(pdb)
+                if (
+                    kind == "chat"
+                    and body
+                    and auth_cfg is not None
+                    and getattr(auth_cfg, "soft_sampling_defaults", False)
+                ):
+                    from .data.models import ApiKey
+                    from .sampling_merge import soft_sampling_body
+
+                    mid = rewrite_model or str(payload.get("mdl") or "") or None
+                    if not mid:
+                        mid = extract_model(body, content_type)
+                    key_prof = ""
+                    kid = getattr(lease, "key_id", None) if lease is not None else None
+                    if kid:
+                        krow = pdb.get(ApiKey, int(kid))
+                        if krow is not None:
+                            key_prof = getattr(krow, "sampling_profile", "") or ""
+                    filled = soft_sampling_body(
+                        pdb,
+                        body,
+                        content_type,
+                        model_id=mid,
+                        headers=request.headers,
+                        enabled=True,
+                        key_profile=key_prof,
+                    )
+                    if filled is not None:
+                        body = filled
+                        up_headers["content-length"] = str(len(body))
             finally:
                 pdb.close()
 
         if lease is None or not lease.source_key:
-            pf_block = _preflight_block(
+            pf_block = await _preflight_block_async(
                 auth_cfg=auth_cfg,
                 backend=backend,
                 kind=kind,

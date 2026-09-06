@@ -319,6 +319,7 @@ def _key_form_context(
         else (owner_user_id or user.id)
     )
     from ..data.routing_strategy import routing_strategy_choices
+    from ..sampling_merge import sampling_profile_choices
 
     return {
         "user": user,
@@ -341,6 +342,7 @@ def _key_form_context(
         "grant_empty": (not ceil.unrestricted and not ceil.services),
         "default_owner_user_id": resolved_owner,
         "routing_strategies": routing_strategy_choices(include_inherit=True),
+        "sampling_profiles": sampling_profile_choices(),
     }
 
 

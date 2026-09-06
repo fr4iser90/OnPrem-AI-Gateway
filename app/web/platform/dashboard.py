@@ -43,6 +43,7 @@ def dashboard(
     from ..dashboard_ops import attention_items, fleet_statuses, fleet_summary
     from ..setup import setup_status
     from ...data.backends import hardware_labels
+    from ...data.source_capacity import format_slots_label
 
     zone = zone_from_request(request, user)
     now = utcnow()
@@ -111,6 +112,7 @@ def dashboard(
             "fleet": fleet,
             "fleet_summary": fleet_summary(fleet),
             "hardware_by_name": hardware_labels(db),
+            "format_slots_label": format_slots_label,
             "attention": attention,
         },
     )

@@ -19,13 +19,13 @@ def test_preflight_loading_from_state():
 
 
 def test_preflight_busy():
-    state = EngineState("llama.cpp", Admission.BUSY, "all_slots_busy", probed_at=1.0)
+    state = EngineState("llama.cpp", Admission.BUSY, "all_slots_full", probed_at=1.0)
     with patch("app.upstream_preflight.probe_engine_state", return_value=state):
         pf = preflight_upstream(
             backend="127.0.0.1:8080", kind="chat", model="jarvis", engine="llama.cpp"
         )
     assert not pf.ok
-    assert pf.reason == "backend_busy"
+    assert pf.reason == "all_slots_full"
     assert pf.retry_after == 5
 
 

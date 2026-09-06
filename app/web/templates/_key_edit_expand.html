@@ -95,6 +95,22 @@
         </div>
 
         <div class="field field-gap-sm">
+          <label for="key-sampling-{{ key.id }}">Soft-fill sampling profile</label>
+          <select id="key-sampling-{{ key.id }}" name="sampling_profile"
+                  title="Only when Settings → Routing soft-fill is on and the client omits sampling fields">
+            {% for sp in sampling_profiles %}
+            <option value="{{ sp.id }}"
+              {% if (key.sampling_profile or '') == sp.id %}selected{% endif %}
+              title="{{ sp.summary }}">{{ sp.label }}</option>
+            {% endfor %}
+          </select>
+          <p class="muted mt-0 text-sm">
+            For clients like DSH that send no sampling.
+            Does not override fields the client already sets.
+          </p>
+        </div>
+
+        <div class="field field-gap-sm">
           <label><input type="checkbox" name="is_active" {% if key.is_active %}checked{% endif %}> Active</label>
         </div>
 

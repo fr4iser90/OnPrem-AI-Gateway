@@ -1,0 +1,99 @@
+{# Expandable alias card — badge toggles like Users grants. #}
+{% set cands = cands if cands is defined else [] %}
+{% set open = open if open is defined else false %}
+<details class="alias-card" data-alias-card data-alias-id="{{ a.id }}" {% if open %}open{% endif %}>
+  <summary class="alias-card-summary">
+    <span class="mono alias-card-id" data-alias-label>{{ a.alias_id }}</span>
+    <span class="muted alias-card-active">→ <span class="mono" data-alias-active-label>{{ a.target_model_id }}</span></span>
+    <span class="alias-card-badges" data-alias-summary-badges>
+      {% if a.enabled %}<span class="badge ok">on</span>{% else %}<span class="badge off">off</span>{% endif %}
+      {% if a.hide_candidates %}<span class="badge">hide list</span>{% endif %}
+      {% if a.show_backend %}<span class="badge badge-muted">show target</span>{% endif %}
+      {% if a.preferred_source %}<span class="badge">{{ a.preferred_source }}</span>{% endif %}
+    </span>
+  </summary>
+  <div class="alias-card-body" data-alias-body>
+    <div class="alias-card-grid">
+      <div class="field">
+        <label for="alias_name_{{ a.id }}">Alias name</label>
+        <input class="mono" id="alias_name_{{ a.id }}" type="text" name="alias_id"
+               value="{{ a.alias_id }}" required pattern="[a-z0-9][a-z0-9._-]{0,126}"
+               data-alias-name autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="target_{{ a.id }}">Active model</label>
+        <select class="mono" id="target_{{ a.id }}" name="target_model_id" required data-alias-target>
+          {% for mid in cands %}
+          <option value="{{ mid }}" {% if a.target_model_id == mid %}selected{% endif %}>{{ mid }}</option>
+          {% endfor %}
+          {% if a.target_model_id and a.target_model_id not in cands %}
+          <option value="{{ a.target_model_id }}" selected>{{ a.target_model_id }}</option>
+          {% endif %}
+          {% for mid in catalog_model_ids %}
+            {% if mid not in cands and mid != a.target_model_id %}
+            <option value="{{ mid }}">{{ mid }}</option>
+            {% endif %}
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="source_{{ a.id }}">Preferred source <span class="muted">(hosts of Active)</span></label>
+        <select id="source_{{ a.id }}" name="preferred_source" data-alias-source>
+          <option value="" {% if not a.preferred_source %}selected{% endif %}>—</option>
+          {% for chip in source_names %}
+          <option value="{{ chip }}" {% if a.preferred_source == chip %}selected{% endif %}>{{ chip }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div class="field field-gap-sm">
+      <span class="muted text-sm">Flags · click to toggle</span>
+      <div class="tag-row alias-flag-row" role="group" aria-label="Alias flags">
+        <button type="button" class="badge badge-toggle {% if a.enabled %}ok{% else %}off{% endif %}"
+                data-alias-flag="enabled" aria-pressed="{{ 'true' if a.enabled else 'false' }}"
+                title="Clients can use this alias">{{ 'on' if a.enabled else 'off' }}</button>
+        <button type="button" class="badge badge-toggle {% if a.hide_candidates %}{% else %}badge-muted{% endif %}"
+                data-alias-flag="hide" aria-pressed="{{ 'true' if a.hide_candidates else 'false' }}"
+                title="Hide pool model ids from GET /v1/models">{{ 'hide list' if a.hide_candidates else 'list all' }}</button>
+        <button type="button" class="badge badge-toggle {% if a.show_backend %}{% else %}badge-muted{% endif %}"
+                data-alias-flag="show" aria-pressed="{{ 'true' if a.show_backend else 'false' }}"
+                title="Show → real model id next to the alias in /v1/models">{{ 'show target' if a.show_backend else 'name only' }}</button>
+      </div>
+    </div>
+
+    <div class="field field--wide">
+      <label>Candidates <span class="muted">· pick to add · Detect · × remove</span></label>
+      <div class="tag-row grant-source-badges alias-cand-chips" data-alias-cand-list>
+        {% for mid in cands %}
+        <span class="grant-source-chip" data-cand="{{ mid }}">
+          <span class="badge {% if mid == a.target_model_id %}ok{% endif %} mono">{{ mid }}{% if mid == a.target_model_id %} · active{% endif %}</span>
+          {% if mid != a.target_model_id %}
+          <button type="button" class="grant-source-revoke" data-alias-cand-remove data-mid="{{ mid }}" title="Remove">×</button>
+          {% endif %}
+        </span>
+        {% else %}
+        <span class="muted text-sm" data-cand-empty>None yet</span>
+        {% endfor %}
+      </div>
+      <div class="alias-cand-add">
+        <select class="mono" data-alias-cand-pick aria-label="Add candidate model">
+          <option value="">Add model…</option>
+          {% for mid in catalog_model_ids %}
+            {% if mid not in cands %}
+            <option value="{{ mid }}">{{ mid }}</option>
+            {% endif %}
+          {% endfor %}
+        </select>
+        <button type="button" class="badge badge-add" data-alias-cand-detect
+                title="Add similar models (same family as Active; local until Save)">Detect</button>
+      </div>
+    </div>
+
+    <div class="alias-card-actions">
+      <button type="button" class="primary" data-alias-save>Save</button>
+      <button type="button" class="btn-sm" data-alias-delete>Delete</button>
+      <span class="muted text-sm" data-alias-status hidden></span>
+    </div>
+  </div>
+</details>

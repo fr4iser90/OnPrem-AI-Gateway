@@ -65,12 +65,14 @@ def test_update_catalog_meta_and_payload_description(tmp_path: Path):
         tags="tools, code",
         short_note="Solid default",
         docs_url="https://huggingface.co/org/alpha",
+        recommended_sampling='{"instruct":{"temperature":0.7,"top_p":0.8}}',
     )
     db.commit()
     db.refresh(row)
     assert row.tags == "tools,code"
     assert row.short_note == "Solid default"
     assert row.docs_url.startswith("https://")
+    assert '"temperature":0.7' in row.recommended_sampling
 
     update_catalog_meta(db, row.id, docs_url="not-a-url")
     db.commit()
@@ -79,6 +81,60 @@ def test_update_catalog_meta_and_payload_description(tmp_path: Path):
 
     payload = openai_models_payload([row])
     assert payload["data"][0]["description"] == "Solid default"
+    assert payload["data"][0]["recommended_sampling"]["instruct"]["temperature"] == 0.7
+
+
+def test_recommended_sampling_rejects_non_object(tmp_path: Path):
+    db = _session(tmp_path)
+    row = CatalogModel(source_name="chat", kind="chat", model_id="x", enabled=True)
+    db.add(row)
+    db.commit()
+    try:
+        update_catalog_meta(db, row.id, recommended_sampling="[1,2]")
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
+
+
+def test_import_recommended_sampling_longest_key(tmp_path: Path):
+    from app.data.catalog import import_recommended_sampling
+
+    db = _session(tmp_path)
+    rows = [
+        CatalogModel(source_name="chat", kind="chat", model_id="Qwen3.8-Flash-Next-UD-Q4_K_XL", enabled=True),
+        CatalogModel(source_name="chat", kind="chat", model_id="Qwen3.8-27B-UD-Q4_K_XL", enabled=True),
+        CatalogModel(source_name="chat", kind="chat", model_id="Qwen3-8B-UD-Q4_K_XL", enabled=True),
+        CatalogModel(source_name="chat", kind="chat", model_id="Qwen3.8-mmproj-F16", enabled=True),
+    ]
+    db.add_all(rows)
+    db.commit()
+
+    stats = import_recommended_sampling(
+        db,
+        {
+            "Qwen3.8-Flash-Next": {"thinking": {"temperature": 1.0}},
+            "Qwen3.8-27B": {"instruct": {"temperature": 0.7}},
+            "Qwen3-8B": {"thinking": {"temperature": 0.6}},
+        },
+    )
+    db.commit()
+    assert stats["updated"] == 3
+
+    by_id = {r.model_id: r for r in db.query(CatalogModel).all()}
+    assert '"temperature":1.0' in by_id["Qwen3.8-Flash-Next-UD-Q4_K_XL"].recommended_sampling
+    assert '"temperature":0.7' in by_id["Qwen3.8-27B-UD-Q4_K_XL"].recommended_sampling
+    assert '"temperature":0.6' in by_id["Qwen3-8B-UD-Q4_K_XL"].recommended_sampling
+    assert (by_id["Qwen3.8-mmproj-F16"].recommended_sampling or "") == ""
+
+    # Second import without overwrite skips filled rows
+    stats2 = import_recommended_sampling(
+        db,
+        {"Qwen3.8-27B": {"instruct": {"temperature": 0.9}}},
+        overwrite=False,
+    )
+    assert stats2["updated"] == 0
+    assert stats2["skipped"] == 1
+
 
 
 def test_parse_openai_model_item_loaded_and_unloaded():
@@ -89,7 +145,7 @@ def test_parse_openai_model_item_loaded_and_unloaded():
             "id": "GemCod",
             "status": {
                 "value": "loaded",
-                "args": ["--ctx-size", "8192", "--model", "/x.gguf"],
+                "args": ["--ctx-size", "8192", "--parallel", "4", "--model", "/x.gguf"],
             },
             "architecture": {
                 "input_modalities": ["text"],
@@ -108,6 +164,7 @@ def test_parse_openai_model_item_loaded_and_unloaded():
     assert loaded.model_id == "GemCod"
     assert loaded.upstream_status == "loaded"
     assert loaded.ctx_size == 8192
+    assert loaded.n_parallel == 4
     assert loaded.has_meta is True
     assert loaded.n_ctx == 4096
     assert loaded.n_ctx_train == 32768
@@ -121,7 +178,7 @@ def test_parse_openai_model_item_loaded_and_unloaded():
             "id": "big",
             "status": {
                 "value": "unloaded",
-                "args": ["--ctx-size", "131072"],
+                "args": ["--ctx-size", "131072", "--parallel", "2"],
             },
             "architecture": {
                 "input_modalities": ["text"],
@@ -132,8 +189,19 @@ def test_parse_openai_model_item_loaded_and_unloaded():
     assert unloaded is not None
     assert unloaded.upstream_status == "unloaded"
     assert unloaded.ctx_size == 131072
+    assert unloaded.n_parallel == 2
     assert unloaded.has_meta is False
     assert unloaded.n_embd is None
+
+
+def test_parallel_from_args():
+    from app.data.catalog import parallel_from_args
+
+    assert parallel_from_args(["--parallel", "8"]) == 8
+    assert parallel_from_args(["-np", "3"]) == 3
+    assert parallel_from_args(["--parallel", "0"]) is None
+    assert parallel_from_args(["--ctx-size", "8192"]) is None
+    assert parallel_from_args(None) is None
 
 
 def test_last_known_meta_retained_on_unload(tmp_path: Path):
@@ -148,7 +216,7 @@ def test_last_known_meta_retained_on_unload(tmp_path: Path):
     loaded = parse_openai_model_item(
         {
             "id": "GemCod",
-            "status": {"value": "loaded", "args": ["--ctx-size", "8192"]},
+            "status": {"value": "loaded", "args": ["--ctx-size", "8192", "--parallel", "4"]},
             "meta": {"n_embd": 640, "n_ctx": 4096, "n_params": 100},
         }
     )
@@ -159,12 +227,13 @@ def test_last_known_meta_retained_on_unload(tmp_path: Path):
     assert row.n_embd == 640
     assert row.n_ctx == 4096
     assert row.ctx_size == 8192
+    assert row.n_parallel == 4
     assert row.upstream_status == "loaded"
 
     unloaded = parse_openai_model_item(
         {
             "id": "GemCod",
-            "status": {"value": "unloaded", "args": ["--ctx-size", "16384"]},
+            "status": {"value": "unloaded", "args": ["--ctx-size", "16384", "--parallel", "2"]},
         }
     )
     assert unloaded is not None
@@ -173,14 +242,56 @@ def test_last_known_meta_retained_on_unload(tmp_path: Path):
     db.refresh(row)
     assert row.upstream_status == "unloaded"
     assert row.ctx_size == 16384  # args always refresh
+    assert row.n_parallel == 2
     assert row.n_embd == 640  # last known retained
     assert row.n_ctx == 4096
 
     payload = openai_models_payload([row])
     assert payload["data"][0]["n_embd"] == 640
     assert payload["data"][0]["ctx_size"] == 16384
+    assert payload["data"][0]["n_parallel"] == 2
     assert payload["data"][0]["context_length"] == 16384
     assert payload["data"][0]["status"] == "unloaded"
+
+
+def test_refresh_catalog_load_status_updates_badge_only(tmp_path: Path, monkeypatch):
+    from app.data import catalog as catalog_mod
+    from app.data.backends import upsert_source
+    from app.data.catalog import (
+        DiscoveredModel,
+        SourceDiscovery,
+        refresh_catalog_load_status,
+    )
+
+    db = _session(tmp_path)
+    upsert_source(db, name="lab", kind="chat", address="127.0.0.1:11537")
+    row = CatalogModel(
+        source_name="lab",
+        kind="chat",
+        model_id="Nemotron-x",
+        enabled=True,
+        upstream_status="unloaded",
+    )
+    db.add(row)
+    db.commit()
+
+    def fake_discover(address: str, kind: str) -> SourceDiscovery:
+        assert "11537" in address
+        return SourceDiscovery(
+            [
+                DiscoveredModel(
+                    model_id="Nemotron-x",
+                    upstream_status="loaded",
+                )
+            ],
+            ok=True,
+        )
+
+    monkeypatch.setattr(catalog_mod, "discover_models_for_source", fake_discover)
+    n = refresh_catalog_load_status(db)
+    assert n == 1
+    db.refresh(row)
+    assert row.upstream_status == "loaded"
 
 
 def test_context_length_from_ctx_size_only(tmp_path: Path):

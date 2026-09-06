@@ -58,7 +58,7 @@
         </td>
         <td class="slots-cell mono">
           {% if s.slots_total is not none %}
-            {{ s.slots_busy }}/{{ s.slots_total }} busy
+            {{ format_slots_label(s.slots_busy, s.slots_total) }}
           {% else %}—{% endif %}
         </td>
         <td class="detail-cell muted cell-sm">
@@ -286,9 +286,15 @@
       }
       var slots = row.querySelector('.slots-cell');
       if (slots) {
-        slots.textContent = (s.slots_total != null)
-          ? (s.slots_busy + '/' + s.slots_total + ' busy')
-          : '—';
+        if (s.slots_total != null) {
+          var b = s.slots_busy != null ? s.slots_busy : 0;
+          var t = s.slots_total;
+          slots.textContent = (t > 0 && b >= t)
+            ? ('all slots full (' + b + '/' + t + ')')
+            : (b + '/' + t + ' in use');
+        } else {
+          slots.textContent = '—';
+        }
       }
       var eng = row.querySelector('.engine-cell');
       if (eng) {

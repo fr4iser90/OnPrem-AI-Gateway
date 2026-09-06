@@ -35,7 +35,6 @@ x-llama-gpu: &llama-gpu
   restart: unless-stopped
 
 services:
-  # Sticky: only Q4_K_XL-VL in models.ini, load-on-startup. Never swap this box.
   llama:
     <<: *llama-gpu
     container_name: llama-router

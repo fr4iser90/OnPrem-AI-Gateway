@@ -475,7 +475,7 @@ def _check_llama(
         return EngineState(
             engine,
             Admission.BUSY,
-            "all_slots_busy",
+            "all_slots_full",
             slots_total=total,
             slots_idle=0,
             checks_run=tuple(checks),
@@ -805,7 +805,7 @@ def engine_state_to_load_snapshot(state: EngineState):
 def admission_reason(state: EngineState) -> tuple[str, int]:
     """Map admission → (error_code, retry_after_sec) for 503 responses."""
     mapping: dict[Admission, tuple[str, int]] = {
-        Admission.BUSY: ("backend_busy", 5),
+        Admission.BUSY: ("all_slots_full", 5),
         Admission.LOADING: ("model_initializing", 15),
         Admission.DOWN: ("backend_unreachable", 15),
         Admission.PROBE_FAILED: ("probe_failed", 10),

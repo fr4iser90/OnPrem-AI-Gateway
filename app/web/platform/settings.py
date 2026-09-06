@@ -287,6 +287,9 @@ def settings_routing_save(
     routing_strategy: str = Form("load_aware"),
     source_admission_enabled: str = Form(""),
     catalog_prune_on_sync: str = Form(""),
+    catalog_auto_sync: str = Form(""),
+    catalog_auto_sync_minutes: str = Form("30"),
+    soft_sampling_defaults: str = Form(""),
     source_queue_timeout_sec: str = Form("30"),
     auto_model_default: str = Form(""),
     auto_model_quality: str = Form(""),
@@ -294,6 +297,7 @@ def settings_routing_save(
 ):
     from ..accounts import get_auth_settings
 
+    from ...catalog_auto_sync import clamp_auto_sync_minutes
     from ...data.routing_strategy import normalize_routing_strategy
 
     auth = get_auth_settings(db)
@@ -304,6 +308,9 @@ def settings_routing_save(
     auth.load_aware_routing = strategy == "load_aware"
     auth.source_admission_enabled = source_admission_enabled == "on"
     auth.catalog_prune_on_sync = catalog_prune_on_sync == "on"
+    auth.catalog_auto_sync = catalog_auto_sync == "on"
+    auth.catalog_auto_sync_minutes = clamp_auto_sync_minutes(catalog_auto_sync_minutes)
+    auth.soft_sampling_defaults = soft_sampling_defaults == "on"
     try:
         auth.source_queue_timeout_sec = max(
             1, min(600, int(source_queue_timeout_sec or "30"))
@@ -323,6 +330,8 @@ def settings_routing_save(
             f"auto_vl={auth.auto_vl_routing} preflight={auth.preflight_upstream} "
             f"routing={auth.routing_strategy} admission={auth.source_admission_enabled} "
             f"catalog_prune={auth.catalog_prune_on_sync} "
+            f"catalog_auto_sync={auth.catalog_auto_sync}/{auth.catalog_auto_sync_minutes}m "
+            f"soft_sampling={auth.soft_sampling_defaults} "
             f"queue_s={auth.source_queue_timeout_sec}"
         ),
     )
