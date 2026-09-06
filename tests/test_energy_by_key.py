@@ -83,9 +83,9 @@ def test_energy_by_owner_rolls_up_keys():
     assert len(owners) == 2
     by_name = {r["owner_name"]: r for r in owners}
     assert by_name["alice"]["watt_hours"] == 2.0
-    assert by_name["alice"]["keys"] == 2
+    assert by_name["alice"]["key_count"] == 2
     assert by_name["alice"]["ok_count"] == 5
-    assert by_name["bob"]["keys"] == 1
+    assert by_name["bob"]["key_count"] == 1
     assert owners[0]["owner_name"] in ("alice", "bob")
 
 

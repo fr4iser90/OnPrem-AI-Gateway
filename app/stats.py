@@ -319,12 +319,12 @@ def energy_by_owner(key_rows: list[dict]) -> list[dict]:
                 "ok_count": 0,
                 "watt_hours": 0.0,
                 "watts": [],
-                "keys": 0,
+                "key_count": 0,
             },
         )
         b["ok_count"] += int(r.get("ok_count") or 0)
         b["watt_hours"] += float(r.get("watt_hours") or 0)
-        b["keys"] += 1
+        b["key_count"] += 1
         if r.get("watts_avg") is not None:
             b["watts"].append(float(r["watts_avg"]))
     out: list[dict] = []
@@ -334,7 +334,8 @@ def energy_by_owner(key_rows: list[dict]) -> list[dict]:
             {
                 "owner_user_id": b["owner_user_id"],
                 "owner_name": b["owner_name"],
-                "keys": b["keys"],
+                # key_count — not "keys" (Jinja dict.keys method collision)
+                "key_count": b["key_count"],
                 "ok_count": b["ok_count"],
                 "watt_hours": round(float(b["watt_hours"]), 4),
                 "watts_avg": (sum(samples) / len(samples)) if samples else None,

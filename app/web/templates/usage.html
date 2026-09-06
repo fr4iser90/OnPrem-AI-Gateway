@@ -94,7 +94,7 @@
             <a href="/keys?owner_user_id={{ r.owner_user_id }}">{{ r.owner_name }}</a>
             {% else %}{{ r.owner_name }}{% endif %}
           </td>
-          <td class="num">{{ r.keys }}</td>
+          <td class="num">{{ r.key_count }}</td>
           <td class="num">{{ r.ok_count }}</td>
           <td class="num">{% if r.watts_avg %}{{ '%.0f'|format(r.watts_avg) }}{% else %}—{% endif %}</td>
           <td class="num"><strong>{{ '%.3f'|format(r.watt_hours) }}</strong></td>
