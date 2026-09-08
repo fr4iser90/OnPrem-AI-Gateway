@@ -44,6 +44,7 @@ def test_infer_tags():
     assert "slow" in infer_tags("Qwen3.8-27B-Q8_0-MTP", "chat")
     assert "fast" in infer_tags("Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL", "chat")
     assert "embed" in infer_tags("bge-m3-Q4_K_M", "embed")
+    assert "extractor" in infer_tags("agents-k1", "extractor")
     assert "code" in infer_tags("GemCod-R-Sapphire-270M", "chat")
     assert "stt" in infer_tags("stt", "stt")
 

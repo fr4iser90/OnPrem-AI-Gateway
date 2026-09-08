@@ -3,7 +3,7 @@
 <div class="panel panel--fill">
   <p class="muted mt-0">
     <strong>Kind</strong> is the API (<span class="mono">chat</span> / <span class="mono">embed</span> /
-    <span class="mono">stt</span> / <span class="mono">tts</span>) — leave that.
+    <span class="mono">extractor</span> / <span class="mono">stt</span> / <span class="mono">tts</span>) — leave that.
     <strong>Name</strong> is your label for this box (rename freely:
     <span class="mono">gpu-main</span>, <span class="mono">lab</span>, …).
   </p>
@@ -64,7 +64,7 @@
           <select id="src-kind" name="kind">
             {% for k in kinds %}
             <option value="{{ k }}" {% if k == (preset_kind or 'chat') %}selected{% endif %}>
-              {{ k }}{% if k == 'chat' %} — completions{% elif k == 'embed' %} — embeddings{% elif k == 'stt' %} — speech-to-text{% elif k == 'tts' %} — text-to-speech{% endif %}
+              {{ k }}{% if k == 'chat' %} — completions{% elif k == 'embed' %} — embeddings{% elif k == 'extractor' %} — schema extract{% elif k == 'stt' %} — speech-to-text{% elif k == 'tts' %} — text-to-speech{% endif %}
             </option>
             {% endfor %}
           </select>

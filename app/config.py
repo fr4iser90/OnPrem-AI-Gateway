@@ -12,9 +12,9 @@ from .data.dialects import (  # noqa: F401 — re-export
 
 
 # Functional kinds (path families). Source *names* are free-form slugs in the DB.
-KINDS = ("chat", "embed", "stt", "tts")
+KINDS = ("chat", "embed", "extractor", "stt", "tts")
 MODEL_CHECK_KINDS = frozenset(KINDS)
-MODEL_REQUIRED_KINDS = frozenset({"chat", "embed"})
+MODEL_REQUIRED_KINDS = frozenset({"chat", "embed", "extractor"})
 MODEL_ROUTE_KINDS = frozenset(KINDS)
 
 SOURCE_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
@@ -22,6 +22,7 @@ SOURCE_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 KIND_PATH_HINTS = {
     "chat": "/v1/chat/completions · /api/*",
     "embed": "/v1/embeddings",
+    "extractor": "/v1/extract",
     "stt": "/v1/audio/transcriptions",
     "tts": "/v1/audio/speech",
 }
@@ -43,12 +44,14 @@ class Settings(BaseSettings):
     llm_api_key: str | None = None
     ollama_api_key: str | None = None
     embed_api_key: str | None = None
+    extractor_api_key: str | None = None
     stt_api_key: str | None = None
     tts_api_key: str | None = None
 
     chat_source: str = ""
     chat2_source: str = ""
     embed_source: str = ""
+    extractor_source: str = ""
     stt_source: str = ""
     tts_source: str = ""
     chat_backend: str = ""
@@ -56,6 +59,7 @@ class Settings(BaseSettings):
     llm_backend: str = ""
     ollama_backend: str = ""
     embed_backend: str = ""
+    extractor_backend: str = ""
     stt_backend: str = ""
     tts_backend: str = ""
 
@@ -101,6 +105,8 @@ def kind_from_upstream_path(upstream: str) -> str | None:
         return "chat"
     if p.startswith("/v1/embeddings"):
         return "embed"
+    if p.startswith("/v1/extract"):
+        return "extractor"
     if p.startswith("/v1/audio/transcriptions") or p.startswith("/v1/audio/translations"):
         return "stt"
     if p.startswith("/v1/audio/speech"):

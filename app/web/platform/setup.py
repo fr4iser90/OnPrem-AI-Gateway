@@ -99,7 +99,7 @@ def setup_sources_page(
             "wizard": wiz,
             "step_id": "sources",
             "step_title": "Step 1 · Backends",
-            "step_lede": "Point OnPrem AI Gateway at your local chat / embed / STT / TTS servers.",
+            "step_lede": "Point OnPrem AI Gateway at your local chat / embed / extractor / STT / TTS servers.",
             "kinds": KINDS,
             "flash_ok": request.session.pop("flash_ok", None),
             "flash_err": request.session.pop("flash_err", None),

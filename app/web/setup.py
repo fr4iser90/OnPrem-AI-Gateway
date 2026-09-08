@@ -137,7 +137,7 @@ def setup_status(db: Session) -> dict:
             detail=(
                 f"{len(addressed)} source(s) with address."
                 if addressed
-                else "No backends yet — add chat/embed/stt/tts addresses."
+                else "No backends yet — add chat/embed/extractor/stt/tts addresses."
             ),
             href="/setup/sources" if not wiz["has_sources"] else "/services",
             done=bool(addressed),

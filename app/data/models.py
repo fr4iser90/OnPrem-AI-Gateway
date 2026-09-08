@@ -347,14 +347,14 @@ class BackendConfig(Base):
 
 
 class BackendSource(Base):
-    """Named upstream: many sources per kind (chat/embed/stt/tts)."""
+    """Named upstream: many sources per kind (chat/embed/extractor/stt/tts)."""
 
     __tablename__ = "backend_sources"
     __table_args__ = (UniqueConstraint("name", name="uq_backend_source_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(64), index=True)
-    kind: Mapped[str] = mapped_column(String(16), index=True)  # chat|embed|stt|tts
+    kind: Mapped[str] = mapped_column(String(16), index=True)  # chat|embed|extractor|stt|tts
     address: Mapped[str] = mapped_column(String(255), default="")
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     # Newline-separated model patterns for /v1 routing (exact, prefix*, or name → name:tag)

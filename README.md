@@ -145,9 +145,10 @@ Same product; only how you reach it changes. See `.env.example` for cookie/HTTPS
 
 | Path | Purpose |
 |------|---------|
-| `GET /v1/models` | Chat (+ embed) this key may see. STT/TTS use `/v1/audio/*` (not listed by default; `?kinds=all` opt-in) |
+| `GET /v1/models` | Chat (+ embed + extractor) this key may see. STT/TTS use `/v1/audio/*` (not listed by default; `?kinds=all` opt-in) |
 | `/v1/chat/completions` (and related chat paths) | Chat — routed by `model` |
 | `/v1/embeddings` | Embeddings — routed by `model` |
+| `/v1/extract` | Schema extract (Knowledge-Build) — chat-completions upstream, own source pool |
 | `/v1/audio/transcriptions` | Speech → text (STT) |
 | `/v1/audio/speech` | Text → speech (TTS) |
 | `/s/{name}/v1/…` | Optional: pin a named source; same catalog rules |

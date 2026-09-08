@@ -11,7 +11,7 @@ from app.config import (
 
 
 def test_kinds_are_functional():
-    assert KINDS == ("chat", "embed", "stt", "tts")
+    assert KINDS == ("chat", "embed", "extractor", "stt", "tts")
 
 
 def test_source_name_slug():
@@ -31,6 +31,7 @@ def test_source_name_slug():
         ("/api/chat", "chat"),
         ("/api/tags", "chat"),
         ("/v1/embeddings", "embed"),
+        ("/v1/extract", "extractor"),
         ("/v1/audio/transcriptions", "stt"),
         ("/v1/audio/translations", "stt"),
         ("/v1/audio/speech", "tts"),
@@ -59,3 +60,4 @@ def test_public_route_same_for_every_source_of_kind():
     assert "/v1/chat/completions" in chat
     assert "/s/" not in chat
     assert "/s/" not in public_route_for_source("embed-lab", "embed")
+    assert "/v1/extract" in public_route_for_source("extractor", "extractor")

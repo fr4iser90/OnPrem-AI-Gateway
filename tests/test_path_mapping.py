@@ -6,6 +6,7 @@ def test_auto_styles():
     assert resolve_api_style("tts", "auto") == "piper"
     assert resolve_api_style("stt", None) == "whisper_cpp"
     assert resolve_api_style("chat", "auto") == "openai"
+    assert resolve_api_style("extractor", "auto") == "openai"
 
 
 def test_map_piper_and_whisper():
@@ -13,6 +14,7 @@ def test_map_piper_and_whisper():
     assert map_upstream_path("/v1/audio/transcriptions", kind="stt") == "/inference"
     assert map_upstream_path("/v1/audio/translations", kind="stt") == "/inference"
     assert map_upstream_path("/v1/chat/completions", kind="chat") == "/v1/chat/completions"
+    assert map_upstream_path("/v1/extract", kind="extractor") == "/v1/chat/completions"
 
 
 def test_openai_style_keeps_paths():

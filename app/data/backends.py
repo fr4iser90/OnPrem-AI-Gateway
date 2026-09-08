@@ -486,6 +486,12 @@ def seed_backends_from_env(db: Session, settings: Settings) -> None:
             True,
         ),
         ("embed", "embed", settings.embed_source or settings.embed_backend, True),
+        (
+            "extractor",
+            "extractor",
+            settings.extractor_source or settings.extractor_backend,
+            True,
+        ),
         ("stt", "stt", settings.stt_source or settings.stt_backend, True),
         ("tts", "tts", settings.tts_source or settings.tts_backend, True),
         ("chat2", "chat", settings.chat2_source or settings.chat2_backend, False),

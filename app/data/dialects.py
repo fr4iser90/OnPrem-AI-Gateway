@@ -28,10 +28,10 @@ DIALECTS: dict[str, ApiDialect] = {
     "openai": ApiDialect(
         id="openai",
         label="OpenAI / llama.cpp",
-        summary="Same /v1/… paths as the client (llama.cpp server, Ollama OpenAI API, most embeds).",
-        kinds=("chat", "embed", "stt", "tts"),
-        path_map=(),
-        examples="/v1/chat/completions, /v1/embeddings (no path rewrite)",
+        summary="Same /v1/… paths as the client (llama.cpp server, Ollama OpenAI API, most embeds). Extractor rewrites to chat completions.",
+        kinds=("chat", "embed", "extractor", "stt", "tts"),
+        path_map=(("/v1/extract", "/v1/chat/completions"),),
+        examples="/v1/chat/completions, /v1/embeddings; /v1/extract → /v1/chat/completions",
     ),
     "piper": ApiDialect(
         id="piper",
@@ -58,6 +58,7 @@ DIALECTS: dict[str, ApiDialect] = {
 AUTO_DIALECT_BY_KIND: dict[str, str] = {
     "chat": "openai",
     "embed": "openai",
+    "extractor": "openai",
     "tts": "piper",
     "stt": "whisper_cpp",
 }
@@ -72,7 +73,7 @@ def dialect_choices() -> list[dict[str, str]]:
         {
             "id": "auto",
             "label": "Auto (by kind)",
-            "summary": "Not a live probe — chat/embed→OpenAI/llama.cpp paths, stt→whisper.cpp, tts→Piper. Override only if your server differs.",
+            "summary": "Not a live probe — chat/embed/extractor→OpenAI/llama.cpp paths, stt→whisper.cpp, tts→Piper. Override only if your server differs.",
         }
     ]
     for d in DIALECTS.values():

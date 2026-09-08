@@ -84,9 +84,9 @@ def test_allowlist_intersects_catalog(tmp_path: Path):
 def test_models_list_kinds_parse():
     from app.data.catalog import models_list_kinds
 
-    assert models_list_kinds(None) == frozenset({"chat", "embed"})
-    assert models_list_kinds("") == frozenset({"chat", "embed"})
-    assert models_list_kinds("all") == frozenset({"chat", "embed", "stt", "tts"})
+    assert models_list_kinds(None) == frozenset({"chat", "embed", "extractor"})
+    assert models_list_kinds("") == frozenset({"chat", "embed", "extractor"})
+    assert models_list_kinds("all") == frozenset({"chat", "embed", "extractor", "stt", "tts"})
     assert models_list_kinds("stt,tts") == frozenset({"stt", "tts"})
     assert models_list_kinds("chat,stt,nope") == frozenset({"chat", "stt"})
 

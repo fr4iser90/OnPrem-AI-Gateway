@@ -184,6 +184,9 @@ def probe_source(src: BackendSource) -> ServiceStatus:
             health_paths = ["/health", "/v1/health"]
             if kind == "chat":
                 health_paths = ["/health", "/v1/health", "/api/tags"]
+            if kind == "extractor":
+                # Same OpenAI chat surface as chat; no TEI /info fingerprint.
+                health_paths = ["/health", "/v1/health", "/v1/models"]
             if kind == "embed":
                 # TEI: probe /info first (strong fingerprint); then /health
                 health_paths = ["/info", "/health", "/v1/health"]
@@ -234,7 +237,7 @@ def probe_source(src: BackendSource) -> ServiceStatus:
                     status.detail = f"reachable (HTTP {resp.status_code})"
                     status.probes_ok.append("/")
 
-            if kind in ("chat", "embed") and status.state != "down":
+            if kind in ("chat", "embed", "extractor") and status.state != "down":
                 resp = _get(client, base + "/slots")
                 if resp is not None and resp.status_code == 200:
                     header_hints += " " + _headers_hint(resp)
@@ -336,7 +339,7 @@ def probe_source(src: BackendSource) -> ServiceStatus:
                             pass
 
             # vLLM often exposes /version
-            if kind in ("chat", "embed") and status.state not in ("down", "unset"):
+            if kind in ("chat", "embed", "extractor") and status.state not in ("down", "unset"):
                 ver = _get(client, base + "/version")
                 if ver is not None and ver.status_code == 200:
                     header_hints += " " + _headers_hint(ver)

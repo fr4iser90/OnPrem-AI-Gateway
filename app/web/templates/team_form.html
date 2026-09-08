@@ -59,7 +59,7 @@
     </div>
 
     <div class="field wizard-grow task-form-scroll">
-      <label>Grant · model set (chat / embed) <span class="muted label-normal">— none checked = all ON models for granted sources</span></label>
+      <label>Grant · model set (chat / embed / extractor) <span class="muted label-normal">— none checked = all ON models for granted sources</span></label>
       {% with catalog_groups=catalog_groups, selected=selected_models, input_name='models', picker_id='team-models', hint='' %}
       {% include "partials/model_picker.html" %}
       {% endwith %}

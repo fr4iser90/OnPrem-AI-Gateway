@@ -521,6 +521,7 @@ def migrate_legacy_keys(db: Session, settings: Settings) -> None:
     mapping = [
         ("migrated-chat", settings.llm_api_key or settings.ollama_api_key, ["chat"]),
         ("migrated-embed", settings.embed_api_key, ["embed"]),
+        ("migrated-extractor", settings.extractor_api_key, ["extractor"]),
         ("migrated-stt", settings.stt_api_key, ["stt"]),
         ("migrated-tts", settings.tts_api_key, ["tts"]),
     ]
@@ -530,6 +531,7 @@ def migrate_legacy_keys(db: Session, settings: Settings) -> None:
             ("migrated-chat", settings.llm_api_key, ["chat"]),
             ("migrated-chat-ollama", settings.ollama_api_key, ["chat"]),
             ("migrated-embed", settings.embed_api_key, ["embed"]),
+            ("migrated-extractor", settings.extractor_api_key, ["extractor"]),
             ("migrated-stt", settings.stt_api_key, ["stt"]),
             ("migrated-tts", settings.tts_api_key, ["tts"]),
         ]

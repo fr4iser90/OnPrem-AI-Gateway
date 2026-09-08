@@ -55,7 +55,7 @@ def attention_items(
             AttentionItem(
                 severity="warn",
                 title="No backends configured",
-                detail="Add chat/embed/stt/tts sources before routing traffic.",
+                detail="Add chat/embed/extractor/stt/tts sources before routing traffic.",
                 href="/services",
                 cta="Add sources",
             )

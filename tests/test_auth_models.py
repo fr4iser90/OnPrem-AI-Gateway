@@ -9,8 +9,8 @@ from app.config import MODEL_CHECK_KINDS, MODEL_REQUIRED_KINDS
 
 
 def test_model_check_kinds_include_stt_tts():
-    assert MODEL_CHECK_KINDS == frozenset({"chat", "embed", "stt", "tts"})
-    assert MODEL_REQUIRED_KINDS == frozenset({"chat", "embed"})
+    assert MODEL_CHECK_KINDS == frozenset({"chat", "embed", "extractor", "stt", "tts"})
+    assert MODEL_REQUIRED_KINDS == frozenset({"chat", "embed", "extractor"})
 
 
 def test_extract_voice_from_tts_json():

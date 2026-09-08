@@ -17,7 +17,7 @@ from .concurrency import ConcurrencyLease, release_concurrency_lease
 from .priority import priority_gate
 from .rate_limit import rate_limiter
 
-_STREAM_KINDS = frozenset({"chat", "embed", "stt", "tts"})
+_STREAM_KINDS = frozenset({"chat", "embed", "extractor", "stt", "tts"})
 
 
 @dataclass

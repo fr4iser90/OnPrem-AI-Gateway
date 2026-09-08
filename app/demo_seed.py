@@ -16,6 +16,7 @@ from .data.models import WebUser, ApiKey, UsageDaily, UsageEvent, utcnow
 SERVICES_DEMO = [
     ("chat", ["/v1/chat/completions", "llama3.2"], "tokens"),
     ("embed", ["/v1/embeddings", "nomic-embed-text"], "tokens"),
+    ("extractor", ["/v1/extract", "agents-k1"], "tokens"),
     ("stt", ["/v1/audio/transcriptions", "whisper-large"], "audio"),
     ("tts", ["/v1/audio/speech", "piper-en"], "tts"),
 ]

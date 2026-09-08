@@ -110,6 +110,8 @@ def infer_tags(model_id: str, kind: str) -> list[str]:
     tags: list[str] = []
     if kind == "embed" or "embed" in mid or mid.startswith(("bge-", "e5-", "gte-")):
         tags.append("embed")
+    if kind == "extractor":
+        tags.append("extractor")
     if kind == "stt":
         tags.append("stt")
     if kind == "tts":
@@ -142,7 +144,7 @@ def apply_inferred_tags(row: CatalogModel, *, only_if_empty: bool = True) -> Non
 
 
 def catalog_grouped_by_kind(rows: list[CatalogModel]) -> list[tuple[str, list[CatalogModel]]]:
-    order = ("chat", "embed", "stt", "tts")
+    order = ("chat", "embed", "extractor", "stt", "tts")
     buckets: dict[str, list[CatalogModel]] = {k: [] for k in order}
     other: list[CatalogModel] = []
     for row in rows:
@@ -576,7 +578,7 @@ def refresh_catalog_load_status(db: Session) -> int:
     sources = [
         s
         for s in list_sources(db)
-        if (s.address or "").strip() and s.kind in ("chat", "embed", "stt", "tts")
+        if (s.address or "").strip() and s.kind in ("chat", "embed", "extractor", "stt", "tts")
     ]
     if not sources:
         return 0
@@ -679,7 +681,7 @@ def sync_catalog_from_sources(db: Session) -> dict[str, int]:
     for src in list_sources(db):
         if not (src.address or "").strip():
             continue
-        if src.kind not in ("chat", "embed", "stt", "tts"):
+        if src.kind not in ("chat", "embed", "extractor", "stt", "tts"):
             continue
         try:
             discovery = discover_models_for_source(src.address.strip(), src.kind)
@@ -740,7 +742,7 @@ def sync_catalog_from_sources(db: Session) -> dict[str, int]:
         [
             s
             for s in list_sources(db)
-            if s.kind in ("chat", "embed", "stt", "tts") and (s.address or "").strip()
+            if s.kind in ("chat", "embed", "extractor", "stt", "tts") and (s.address or "").strip()
         ]
     )
     return {
@@ -756,7 +758,7 @@ def sync_catalog_from_sources(db: Session) -> dict[str, int]:
 def models_list_kinds(raw: str | None = None) -> frozenset[str]:
     """Parse ``?kinds=`` for GET /v1/models.
 
-    Default (empty): chat + embed only — STT/TTS stay on /v1/audio/* and are
+    Default (empty): chat + embed + extractor — STT/TTS stay on /v1/audio/* and are
     not listed here (avoids polluting IDE model pickers).
     ``all`` / ``stt,tts``: opt-in to include audio models in the list.
     """
@@ -764,11 +766,13 @@ def models_list_kinds(raw: str | None = None) -> frozenset[str]:
 
     text = (raw or "").strip().lower()
     if not text:
-        return frozenset({"chat", "embed"})
+        return frozenset({"chat", "embed", "extractor"})
     if text in {"all", "*"}:
         return frozenset(MODEL_CHECK_KINDS)
     wanted = {p.strip() for p in text.replace(";", ",").split(",") if p.strip()}
-    return frozenset(wanted & set(MODEL_CHECK_KINDS)) or frozenset({"chat", "embed"})
+    return frozenset(wanted & set(MODEL_CHECK_KINDS)) or frozenset(
+        {"chat", "embed", "extractor"}
+    )
 
 
 def models_visible_for_key(
@@ -779,14 +783,16 @@ def models_visible_for_key(
 ) -> list[CatalogModel]:
     """Catalog rows the key may see in GET /v1/models.
 
-    Default kinds are chat+embed. Pass ``kinds`` (e.g. ``?kinds=all``) to also
+    Default kinds are chat+embed+extractor. Pass ``kinds`` (e.g. ``?kinds=all``) to also
     list stt/tts when those sources are granted. Inference paths are unchanged.
     """
     from ..auth.check import _models_for_key, _services_for_key
 
-    kind_set = frozenset(kinds) if kinds is not None else frozenset({"chat", "embed"})
+    kind_set = (
+        frozenset(kinds) if kinds is not None else frozenset({"chat", "embed", "extractor"})
+    )
     if not kind_set:
-        kind_set = frozenset({"chat", "embed"})
+        kind_set = frozenset({"chat", "embed", "extractor"})
 
     allowed_sources = _services_for_key(api_key, db)
     rows = list_catalog(db)

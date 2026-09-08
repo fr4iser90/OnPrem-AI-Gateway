@@ -55,26 +55,26 @@ ENGINE_PROFILES: dict[str, EngineProfile] = {
     "llama.cpp": EngineProfile(
         id="llama.cpp",
         label="llama.cpp server",
-        kinds=frozenset({"chat", "embed"}),
+        kinds=frozenset({"chat", "embed", "extractor"}),
         slot_admission=True,
     ),
     "llama-router": EngineProfile(
         id="llama-router",
         label="llama.cpp router",
-        kinds=frozenset({"chat", "embed"}),
+        kinds=frozenset({"chat", "embed", "extractor"}),
         slot_admission=True,
         model_admission=True,
     ),
     "ollama": EngineProfile(
         id="ollama",
         label="Ollama",
-        kinds=frozenset({"chat", "embed"}),
+        kinds=frozenset({"chat", "embed", "extractor"}),
         model_admission=True,
     ),
     "vllm": EngineProfile(
         id="vllm",
         label="vLLM",
-        kinds=frozenset({"chat", "embed"}),
+        kinds=frozenset({"chat", "embed", "extractor"}),
         slot_admission=True,
     ),
     "tei": EngineProfile(
@@ -85,17 +85,17 @@ ENGINE_PROFILES: dict[str, EngineProfile] = {
     "localai": EngineProfile(
         id="localai",
         label="LocalAI",
-        kinds=frozenset({"chat", "embed", "stt", "tts"}),
+        kinds=frozenset({"chat", "embed", "extractor", "stt", "tts"}),
     ),
     "lmstudio": EngineProfile(
         id="lmstudio",
         label="LM Studio",
-        kinds=frozenset({"chat", "embed"}),
+        kinds=frozenset({"chat", "embed", "extractor"}),
     ),
     "openai-api": EngineProfile(
         id="openai-api",
         label="OpenAI-compatible (no slot API)",
-        kinds=frozenset({"chat", "embed", "stt", "tts"}),
+        kinds=frozenset({"chat", "embed", "extractor", "stt", "tts"}),
     ),
     "faster-whisper": EngineProfile(
         id="faster-whisper",
