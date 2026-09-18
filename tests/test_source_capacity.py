@@ -140,6 +140,43 @@ def test_openai_payload_includes_slots(tmp_path: Path):
     assert item["context_length"] == 65536
 
 
+def test_openai_payload_marks_unavailable_when_source_down(tmp_path: Path):
+    db = _session(tmp_path)
+    row = CatalogModel(
+        source_name="coder",
+        kind="chat",
+        model_id="Tiel-Coder",
+        enabled=True,
+        upstream_status="loaded",
+    )
+    db.add(row)
+    db.commit()
+    capacity = {
+        "coder": SourceCapacity(
+            source_name="coder",
+            state="down",
+        )
+    }
+    item = openai_models_payload([row], capacity_by_source=capacity)["data"][0]
+    assert item["id"] == "Tiel-Coder"
+    assert item["status"] == "unavailable"
+    assert item["load_state"] == "down"
+
+
+def test_apply_live_availability_preserves_loaded_when_ok():
+    from app.data.source_capacity import apply_live_availability
+
+    entry = {"id": "m", "status": "loaded"}
+    apply_live_availability(
+        entry, SourceCapacity(source_name="chat", state="ok")
+    )
+    assert entry["status"] == "loaded"
+    apply_live_availability(
+        entry, SourceCapacity(source_name="chat", state="down")
+    )
+    assert entry["status"] == "unavailable"
+
+
 def test_alias_list_entries_include_slots_from_preferred_source(tmp_path: Path):
     db = _session(tmp_path)
     upsert_source(db, name="chat", kind="chat", address="127.0.0.1:11535")
@@ -177,6 +214,32 @@ def test_alias_list_entries_include_slots_from_preferred_source(tmp_path: Path):
     assert entries[0]["slots_idle"] == 2
     assert entries[0]["slots_busy"] == 1
     assert entries[0]["context_length"] == 131072
+
+
+def test_alias_list_unavailable_when_preferred_source_down(tmp_path: Path):
+    db = _session(tmp_path)
+    upsert_source(db, name="chat", kind="chat", address="127.0.0.1:11535")
+    db.add(
+        CatalogModel(
+            source_name="chat",
+            kind="chat",
+            model_id="Qwen-VL",
+            enabled=True,
+            upstream_status="loaded",
+        )
+    )
+    upsert_alias(
+        db,
+        alias_id="chat",
+        target_model_id="Qwen-VL",
+        preferred_source="chat",
+        show_backend=True,
+    )
+    db.commit()
+    capacity = {"chat": SourceCapacity(source_name="chat", state="down")}
+    entries = alias_list_entries(db, capacity_by_source=capacity)
+    assert entries[0]["status"] == "unavailable"
+    assert entries[0]["load_state"] == "down"
 
 
 def test_merge_probe_idle_without_gateway(tmp_path: Path):

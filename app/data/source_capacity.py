@@ -50,6 +50,19 @@ def capacity_fields(cap: SourceCapacity | None) -> dict:
     return out
 
 
+def apply_live_availability(entry: dict, cap: SourceCapacity | None) -> dict:
+    """Override stale catalog ``status`` when the source is unreachable.
+
+    Enable flags stay as-is; clients must not treat last-sync ``loaded`` as ready
+    when ``load_state`` is ``down``.
+    """
+    if not entry or cap is None:
+        return entry
+    if (cap.state or "").lower() == "down":
+        entry["status"] = "unavailable"
+    return entry
+
+
 def probe_model_for_source(db: Session, source_name: str) -> str | None:
     """Pick a catalog model id for llama-router ``/slots?model=`` (needs a name)."""
     name = (source_name or "").strip()
@@ -210,8 +223,9 @@ def capacities_by_source(
 
 
 def attach_capacity(entry: dict, cap: SourceCapacity | None) -> dict:
-    """Mutate and return entry with slot fields."""
+    """Mutate and return entry with slot fields + live availability status."""
     if not entry or cap is None:
         return entry
     entry.update(capacity_fields(cap))
+    apply_live_availability(entry, cap)
     return entry

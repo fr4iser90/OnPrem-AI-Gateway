@@ -49,3 +49,17 @@ def test_preflight_strict_on_down():
         )
     assert not pf.ok
     assert pf.reason == "backend_unreachable"
+    assert pf.retryable is False
+    assert pf.retry_after == 0
+
+
+def test_preflight_busy_is_retryable():
+    state = EngineState("llama.cpp", Admission.BUSY, "all_slots_full", probed_at=1.0)
+    with patch("app.upstream_preflight.probe_engine_state", return_value=state):
+        pf = preflight_upstream(
+            backend="127.0.0.1:8080", kind="chat", model="jarvis", engine="llama.cpp"
+        )
+    assert not pf.ok
+    assert pf.reason == "all_slots_full"
+    assert pf.retryable is True
+    assert pf.retry_after == 5

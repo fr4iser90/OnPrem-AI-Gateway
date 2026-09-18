@@ -21,6 +21,7 @@ class PreflightResult:
     retry_after: int = 15
     engine: str = ""
     detail: str = ""
+    retryable: bool = True
 
 
 def preflight_upstream(
@@ -39,7 +40,9 @@ def preflight_upstream(
     """
     addr = (backend or "").strip()
     if not addr:
-        return PreflightResult(False, "no_backend", 15)
+        return PreflightResult(
+            False, "no_backend", retry_after=0, retryable=False
+        )
 
     engine_id = resolve_engine_for_source(
         backend=addr,
@@ -63,11 +66,12 @@ def preflight_upstream(
             ok=True, engine=state.engine, detail=state.detail
         )
 
-    reason, retry = admission_reason(state)
+    reason, retry, retryable = admission_reason(state)
     return PreflightResult(
         ok=False,
         reason=reason,
         retry_after=retry,
         engine=state.engine,
         detail=state.detail,
+        retryable=retryable,
     )

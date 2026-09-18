@@ -155,17 +155,23 @@ def _preflight_block(
     if pf.ok:
         return None
     release_concurrency_lease(lease)
-    return JSONResponse(
-        {
-            "error": pf.reason,
-            "service": service,
-            "engine": pf.engine,
-            "detail": pf.detail,
-            "retry_after": pf.retry_after,
-        },
-        status_code=503,
-        headers={"Retry-After": str(pf.retry_after)},
-    )
+    # Busy/loading → 503 + Retry-After (agents may retry).
+    # Unreachable/probe fail → 502, not retryable (stop endless 503 loops).
+    body = {
+        "error": pf.reason,
+        "service": service,
+        "engine": pf.engine,
+        "detail": pf.detail,
+        "retryable": pf.retryable,
+    }
+    headers: dict[str, str] = {}
+    if pf.retryable and pf.retry_after > 0:
+        body["retry_after"] = pf.retry_after
+        headers["Retry-After"] = str(pf.retry_after)
+        status = 503
+    else:
+        status = 502
+    return JSONResponse(body, status_code=status, headers=headers)
 
 
 async def _source_admission_block_async(**kwargs) -> JSONResponse | None:
@@ -352,7 +358,7 @@ def create_app() -> FastAPI:
         if not restricted:
             allow_union = None
 
-        # Slot fields from load-cache / admission only — no live probes on list.
+        # Live capacity probes (cached ~3s) so status/load_state reflect reachability.
         slot_sources: set[str] = {r.source_name for r in rows}
         from .data.models import CatalogModel
 
@@ -374,7 +380,7 @@ def create_app() -> FastAPI:
             )
             if cat is not None:
                 slot_sources.add(cat.source_name)
-        capacity = capacities_by_source(db, slot_sources, probe=False)
+        capacity = capacities_by_source(db, slot_sources, probe=True)
 
         payload = openai_models_payload(rows, capacity_by_source=capacity)
         hidden = hidden_catalog_ids(db)
@@ -636,7 +642,11 @@ def create_app() -> FastAPI:
                 finally:
                     db.close()
             return JSONResponse(
-                {"error": "upstream_unreachable", "detail": str(exc)},
+                {
+                    "error": "upstream_unreachable",
+                    "detail": str(exc),
+                    "retryable": False,
+                },
                 status_code=502,
             )
 

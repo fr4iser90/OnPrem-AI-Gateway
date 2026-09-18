@@ -25,6 +25,10 @@ Each model/alias entry may also include live capacity from the preferred upstrea
 { "id": "qwen3.6", "slots_total": 3, "slots_idle": 2, "slots_busy": 1, "load_state": "ok" }
 ```
 
-(`slots_*` from engine `/slots` or Services `max_concurrency`; cached ~3s. Fleet-wide, not per-key.)
+When a source is unreachable, the entry stays listed (admin Enable unchanged) but
+advertises `"status": "unavailable"` and `"load_state": "down"` instead of a stale
+`"loaded"` from the last catalog sync. Probes are cached ~3s.
+
+(`slots_*` from engine `/slots` or Services `max_concurrency`; fleet-wide, not per-key.)
 
 Swap/load-on-startup is entirely llama.cpp router config. The gateway only proxies to the address you configured.

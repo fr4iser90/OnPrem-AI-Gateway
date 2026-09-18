@@ -4,7 +4,7 @@
     <h3 class="section-label">OnPrem AI Gateway behavior</h3>
     <div class="checkboxes checkboxes-block">
       <label><input type="checkbox" name="auto_vl_routing" {% if auth.auto_vl_routing %}checked{% endif %}> Auto-route image chat → VL model</label>
-      <label><input type="checkbox" name="preflight_upstream" {% if auth.preflight_upstream %}checked{% endif %}> Strict preflight (503 when all slots full / loading / probe failed)</label>
+      <label><input type="checkbox" name="preflight_upstream" {% if auth.preflight_upstream %}checked{% endif %}> Strict preflight (503 busy/loading; 502 unreachable, not retryable)</label>
       <label><input type="checkbox" name="source_admission_enabled" {% if auth.source_admission_enabled %}checked{% endif %}> Per-source admission queue (after preflight)</label>
       <label><input type="checkbox" name="catalog_prune_on_sync" {% if auth.catalog_prune_on_sync %}checked{% endif %}> Auto-disable catalog rows missing from upstream after sync</label>
       <label><input type="checkbox" name="catalog_auto_sync" {% if auth.catalog_auto_sync %}checked{% endif %}> Auto-sync catalog from sources on an interval</label>
@@ -49,7 +49,8 @@
     </div>
     <p class="muted field-gap-sm">
       Strict preflight uses engine-specific APIs (<span class="mono">/slots</span>, <span class="mono">/api/ps</span>, <span class="mono">/metrics</span>) — no fail-open.
-      Returns <span class="mono">503</span> + <span class="mono">Retry-After</span> when the backend cannot admit the request.
+      Busy/loading → <span class="mono">503</span> + <span class="mono">Retry-After</span> + <span class="mono">retryable: true</span>.
+      Unreachable / probe failed → <span class="mono">502</span> + <span class="mono">retryable: false</span> (no Retry-After), so agents do not loop.
       Admission queue: holds a per-source slot (from <span class="mono">max_concurrency</span> or engine <span class="mono">/props</span> slots) with team priority until the stream ends.
     </p>
 

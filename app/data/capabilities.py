@@ -789,7 +789,8 @@ def engine_state_to_load_snapshot(state: EngineState):
         Admission.MODEL_MISMATCH,
     }:
         load_state = "loading"
-    elif state.admission == Admission.DOWN:
+    elif state.admission in {Admission.DOWN, Admission.PROBE_FAILED}:
+        # Probe failure ≈ unreachable for clients/routing (avoid stale "loaded").
         load_state = "down"
     else:
         load_state = "unknown"
@@ -802,14 +803,18 @@ def engine_state_to_load_snapshot(state: EngineState):
     )
 
 
-def admission_reason(state: EngineState) -> tuple[str, int]:
-    """Map admission → (error_code, retry_after_sec) for 503 responses."""
-    mapping: dict[Admission, tuple[str, int]] = {
-        Admission.BUSY: ("all_slots_full", 5),
-        Admission.LOADING: ("model_initializing", 15),
-        Admission.DOWN: ("backend_unreachable", 15),
-        Admission.PROBE_FAILED: ("probe_failed", 10),
-        Admission.CAPABILITY_MISSING: ("capability_missing", 30),
-        Admission.MODEL_MISMATCH: ("model_mismatch", 15),
+def admission_reason(state: EngineState) -> tuple[str, int, bool]:
+    """Map admission → (error_code, retry_after_sec, retryable).
+
+    Busy/loading: short Retry-After + retryable (503).
+    Down/probe/capability: not retryable (502, omit Retry-After) so agents stop looping.
+    """
+    mapping: dict[Admission, tuple[str, int, bool]] = {
+        Admission.BUSY: ("all_slots_full", 5, True),
+        Admission.LOADING: ("model_initializing", 15, True),
+        Admission.DOWN: ("backend_unreachable", 0, False),
+        Admission.PROBE_FAILED: ("probe_failed", 0, False),
+        Admission.CAPABILITY_MISSING: ("capability_missing", 0, False),
+        Admission.MODEL_MISMATCH: ("model_mismatch", 15, True),
     }
-    return mapping.get(state.admission, ("backend_unavailable", 15))
+    return mapping.get(state.admission, ("backend_unavailable", 0, False))

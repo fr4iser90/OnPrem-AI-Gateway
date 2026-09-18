@@ -207,8 +207,23 @@ def test_strict_preflight_no_fail_open_on_down():
 def test_admission_reason_mapping():
     from app.data.capabilities import EngineState
 
-    reason, retry = admission_reason(
+    reason, retry, retryable = admission_reason(
         EngineState("ollama", Admission.MODEL_MISMATCH, probed_at=1.0)
     )
     assert reason == "model_mismatch"
     assert retry == 15
+    assert retryable is True
+
+    reason, retry, retryable = admission_reason(
+        EngineState("llama.cpp", Admission.DOWN, probed_at=1.0)
+    )
+    assert reason == "backend_unreachable"
+    assert retry == 0
+    assert retryable is False
+
+    reason, retry, retryable = admission_reason(
+        EngineState("llama.cpp", Admission.BUSY, probed_at=1.0)
+    )
+    assert reason == "all_slots_full"
+    assert retry == 5
+    assert retryable is True
