@@ -69,7 +69,7 @@ def models_page(
 
     flash_ok = request.session.pop("flash_ok", None)
     flash_err = request.session.pop("flash_err", None)
-    # Loaded badges: last Sync (no full discover on every page load).
+    # Loaded badges: last Sync, overridden to unavailable when live capacity state is down.
     # Slot labels: short /slots?model= probes (≤1.5s) — llama-router requires a model id.
     rows = list_catalog(db)
     auth = get_auth_settings(db)

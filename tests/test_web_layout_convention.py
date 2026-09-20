@@ -314,6 +314,19 @@ def test_services_live_status_uses_panel_head():
     assert 'style="display:flex;align-items:baseline' not in text
 
 
+def test_catalog_row_marks_unavailable_when_source_down():
+    row = (TEMPLATES / "_catalog_model_row.html").read_text(encoding="utf-8")
+    assert "catalog-row--down" in row
+    assert "source_down" in row
+    assert "unavailable" in row
+    assert "badge ok\">loaded" in row  # still shown when source is up
+    models = (TEMPLATES / "models.html").read_text(encoding="utf-8")
+    assert "light probe" not in models
+    assert "unavailable" in models
+    css = STYLE.read_text(encoding="utf-8")
+    assert ".catalog-row--down" in css
+
+
 def test_a11y_shell_contracts():
     base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
     assert 'class="skip-link"' in base

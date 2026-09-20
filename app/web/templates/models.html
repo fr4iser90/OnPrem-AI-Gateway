@@ -50,9 +50,11 @@
     next to the source badge when the
     instance is loaded; configured <span class="mono">slots N</span> under Source meta from
     <span class="mono">--parallel</span> in router args (works unloaded too).
-    <strong>loaded / unloaded</strong> refresh automatically when you open this page (light probe) —
-    full <strong>Sync from sources</strong> discovers new models / meta / prune
-    (or enable auto-sync under <a href="/settings/routing">Settings → Routing</a>).
+    <strong>loaded / unloaded</strong> come from the last <strong>Sync from sources</strong>
+    (or auto-sync under <a href="/settings/routing">Settings → Routing</a>).
+    When the source’s live probe is <strong>down / unreachable</strong>, every model on that
+    source shows <span class="badge off">unavailable</span> and is greyed out — not the stale
+    loaded badge.
   </p>
 </details>
 {% if weight_status is defined and weight_status.ready and not pool_model_weights_enabled %}

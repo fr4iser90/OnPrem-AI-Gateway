@@ -1,5 +1,7 @@
     {# Expects: m, vl, observed, capacity, pool_model_weights_enabled, gpu_power_enabled, suggest_docs_url, format_param_count, format_bytes, format_slots_label #}
-<tr class="{% if vl %}catalog-row--pair{% endif %}{% if not m.enabled and m.disabled_by == 'sync' %} catalog-row--stale{% endif %}">
+{% set cap = capacity.get(m.source_name) if capacity is defined and capacity else none %}
+{% set source_down = cap is not none and (cap.state or '')|lower == 'down' %}
+<tr class="{% if vl %}catalog-row--pair{% endif %}{% if not m.enabled and m.disabled_by == 'sync' %} catalog-row--stale{% endif %}{% if source_down %} catalog-row--down{% endif %}">
   <td>
     <div class="catalog-on-stack">
       <label class="catalog-on-item" for="en-{{ m.id }}">
@@ -27,18 +29,19 @@
     {% endif %}
     <div class="muted hint-micro">
       <span class="badge">{{ m.source_name }}</span>
-      {% set cap = capacity.get(m.source_name) if capacity is defined and capacity else none %}
-      {% if cap and cap.slots_total is not none %}
+      {% if not source_down and cap and cap.slots_total is not none %}
         · <span class="mono" title="Parallel slots for this source (shared by all its models)">{% if cap.slots_busy is not none %}{{ format_slots_label(cap.slots_busy, cap.slots_total) }}{% else %}slots {{ cap.slots_total }}{% endif %}</span>
       {% endif %}
       {% if not m.enabled and m.disabled_by == 'sync' %}<span class="badge off">sync-disabled</span>{% endif %}
       {% if not m.enabled and m.disabled_by == 'admin' %}<span class="badge off">admin-off</span>{% endif %}
-      {% if m.upstream_status %}
+      {% if source_down %}
+        · <span class="badge off" title="Live probe: source unreachable — last sync may still say loaded">unavailable</span>
+      {% elif m.upstream_status %}
         · {% if m.upstream_status == 'loaded' %}<span class="badge ok">loaded</span>
         {% elif m.upstream_status == 'unloaded' %}<span class="badge off">unloaded</span>
         {% else %}<span class="badge">{{ m.upstream_status }}</span>{% endif %}
       {% endif %}
-      {% if vl and vl.upstream_status %}
+      {% if not source_down and vl and vl.upstream_status %}
         · VL
         {% if vl.upstream_status == 'loaded' %}<span class="badge ok">loaded</span>
         {% elif vl.upstream_status == 'unloaded' %}<span class="badge off">unloaded</span>
