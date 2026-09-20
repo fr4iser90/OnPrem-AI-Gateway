@@ -377,10 +377,16 @@ def test_list_pages_use_empty_state():
 def test_a11y_usage_subnav_and_forms():
     usage = (TEMPLATES / "usage.html").read_text(encoding="utf-8")
     daily = (TEMPLATES / "usage_daily.html").read_text(encoding="utf-8")
+    filters = (TEMPLATES / "_usage_filters.html").read_text(encoding="utf-8")
     assert 'aria-current="page"' in usage
     assert 'aria-current="page"' in daily
-    assert 'role="search"' in usage
-    assert "for=\"usage-service\"" in usage
+    assert 'role="search"' in filters
+    assert 'include "_usage_filters.html"' in usage
+    assert 'include "_usage_filters.html"' in daily
+    assert "for=\"usage-service\"" in filters
+    assert "for=\"usage-owner\"" in filters
+    assert "{% if ops_mode %}<th>Owner</th>{% endif %}" in usage or "Owner" in usage
+    assert "Owner" in daily
     users = (TEMPLATES / "users.html").read_text(encoding="utf-8")
     assert 'for="new-username"' in users
     assert "details-edit" in users

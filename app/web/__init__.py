@@ -8,10 +8,11 @@ URLs live at the site root (/me, /keys, /login), never under /admin.
 Layout (DDD-light):
   public/     — login, logout
   portal/     — self-service (all users): me, keys, teams, usage
-  platform/   — ops (platform admin only): dashboard, users, services, settings
+  platform/   — ops (platform admin only): dashboard, users, services, settings, ops/usage
   session.py  — require_user / require_platform_admin
   accounts.py — register, profile, SMTP
   shared.py   — helpers + templates
+  usage_pages.py — shared You vs Ops usage builders
 
 See docs/ARCHITECTURE.md.
 """

@@ -61,12 +61,18 @@ def zone_for_user(user=None, *, fallback: str | None = None) -> ZoneInfo:
             return display_zone(fallback)
     return zone_from_request(None, user)
 
+def days_window_start(tz: ZoneInfo | None = None, *, days: int = 7):
+    """Start of the oldest day in an N-day chart (local midnight in display TZ)."""
+    zone = tz or display_zone()
+    n = max(1, int(days))
+    today = utcnow().astimezone(zone).date()
+    start = today - timedelta(days=n - 1)
+    return datetime(start.year, start.month, start.day, tzinfo=zone)
+
+
 def week_window_start(tz: ZoneInfo | None = None):
     """Start of the oldest day in the 7-day chart (local midnight in display TZ)."""
-    zone = tz or display_zone()
-    today = utcnow().astimezone(zone).date()
-    start = today - timedelta(days=6)
-    return datetime(start.year, start.month, start.day, tzinfo=zone)
+    return days_window_start(tz, days=7)
 
 
 def _percentile(sorted_vals: list[float], p: float) -> float | None:
@@ -118,11 +124,22 @@ def usage_stats(
     latencies: list[float] = []
     watts_samples: list[float] = []
 
-    # Complete 7 calendar days ending today in display timezone
+    # Complete calendar days from `since` through today in display timezone
     today = utcnow().astimezone(zone).date()
+    since_dt = since
+    if getattr(since_dt, "tzinfo", None) is None:
+        since_dt = since_dt.replace(tzinfo=timezone.utc)
+    start_day = since_dt.astimezone(zone).date()
+    if start_day > today:
+        start_day = today
+    span = max(1, (today - start_day).days + 1)
+    # Soft cap so SVG charts stay readable for huge retention windows
+    if span > 90:
+        start_day = today - timedelta(days=89)
+        span = 90
     daily_map: dict[str, dict[str, float | int]] = {}
     day_labels: list[tuple[str, str]] = []  # (key, display)
-    for i in range(6, -1, -1):
+    for i in range(span - 1, -1, -1):
         d = today - timedelta(days=i)
         key = d.isoformat()
         day_labels.append((key, d.strftime("%a %d")))
@@ -598,23 +615,31 @@ def _axis_ticks(max_v: int) -> list[int]:
 
 
 def daily_traffic_chart_svg(
-    series: list[dict], *, width: int = 720, tz_label: str = "UTC"
+    series: list[dict],
+    *,
+    width: int = 720,
+    tz_label: str = "UTC",
+    days_label: str = "7 days",
 ) -> str:
-    """7-day throughput as a thin area-line (not stacked bars)."""
+    """Throughput as a thin area-line over the selected day window."""
     if not series:
         return '<div class="chart-empty">No data in this window.</div>'
 
     total_all = sum(int(s.get("total") or 0) for s in series)
+    window = (days_label or "7 days").strip() or "7 days"
     if total_all <= 0:
         tz_safe = escape(tz_label or "UTC")
+        win_safe = escape(window)
         return (
             '<div class="chart-empty chart-empty--soft">'
             f"<strong>No traffic yet</strong>"
-            f"<span>Last 7 days ({tz_safe}) — the line appears after the first request.</span>"
+            f"<span>Last {win_safe} ({tz_safe}) — the line appears after the first request.</span>"
             "</div>"
         )
 
-    svg = area_chart_svg(series, fill_id="gw-day", aria="Requests per day, last 7 days")
+    svg = area_chart_svg(
+        series, fill_id="gw-day", aria=f"Requests per day, last {window}"
+    )
     rows_html = "".join(
         f"<tr><td>{escape(s['label'])}</td>"
         f"<td class='num'>{s['ok']}</td>"

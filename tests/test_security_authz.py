@@ -208,9 +208,46 @@ def test_regular_user_can_use_self_service_pages(sec):
 def test_admin_can_open_ops_pages(sec):
     client, _world = sec
     _login(client, BOOTSTRAP_USER, BOOTSTRAP_PASSWORD)
-    for path in ("/users", "/settings/access", "/services", "/smtp"):
+    for path in ("/users", "/settings/access", "/services", "/smtp", "/ops/usage"):
         resp = client.get(path, follow_redirects=False)
         assert resp.status_code == 200, path
+
+
+def test_regular_user_cannot_open_ops_usage(sec):
+    client, _world = sec
+    _login(client, ALICE_NAME, ALICE_PASSWORD)
+    resp = client.get("/ops/usage", follow_redirects=False)
+    assert resp.status_code == 403
+    assert "Forbidden" in resp.text
+
+
+def test_you_usage_is_self_scoped_for_admin(sec):
+    client, world = sec
+    _login(client, BOOTSTRAP_USER, BOOTSTRAP_PASSWORD)
+    you = client.get("/usage", follow_redirects=False)
+    assert you.status_code == 200
+    assert "Energy by owner" not in you.text
+    # Admin's own key list should not include alice/bob labels as filter options
+    # unless admin owns those keys — they do not in this fixture.
+    assert f'value="{world.alice_key_id}"' not in you.text
+    assert f'value="{world.bob_key_id}"' not in you.text
+
+    ops = client.get("/ops/usage", follow_redirects=False)
+    assert ops.status_code == 200
+    assert f'value="{world.alice_key_id}"' in ops.text
+    assert f'value="{world.bob_key_id}"' in ops.text
+    assert "<th>Owner</th>" in ops.text
+
+    daily = client.get("/ops/usage/daily", follow_redirects=False)
+    assert daily.status_code == 200
+    assert "<th>Owner</th>" in daily.text
+    assert 'name="owner_user_id"' in daily.text
+    assert 'name="range"' in daily.text
+
+    you_daily = client.get("/usage/daily", follow_redirects=False)
+    assert you_daily.status_code == 200
+    assert "<th>Owner</th>" not in you_daily.text
+    assert 'name="range"' in you_daily.text
 
 
 def test_users_page_links_create_key_for_members(sec):

@@ -113,6 +113,18 @@ def test_admin_can_view_ops_pages_with_demo_usage(data_dir):
         assert page.status_code == 200
         assert "Usage" in page.text
         assert "Model averages" in page.text
+        assert "Energy by owner" not in page.text
+
+        ops_usage = gateway_client.get("/ops/usage", follow_redirects=False)
+        assert ops_usage.status_code == 200
+        assert "Ops usage" in ops_usage.text
+        assert 'name="owner_user_id"' in ops_usage.text
+        assert 'name="range"' in ops_usage.text
+        assert "Fleet-wide" in ops_usage.text
+
+        ops_30 = gateway_client.get("/ops/usage?range=30", follow_redirects=False)
+        assert ops_30.status_code == 200
+        assert "30d" in ops_30.text or "30 days" in ops_30.text
 
     with dbmod.SessionLocal() as db:
         assert db.query(UsageEvent).filter(UsageEvent.is_demo.is_(True)).count() == 120

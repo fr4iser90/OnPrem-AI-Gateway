@@ -33,6 +33,7 @@
     <nav class="nav" aria-label="Primary">
       {% set setup_lock = setup_incomplete|default(false) or request.state.setup_incomplete|default(false) %}
       {% set usage_on = nav in ['usage', 'usage-daily'] %}
+      {% set ops_usage_on = nav == 'ops-usage' %}
       {% if setup_lock %}
       <div class="nav-group nav-group--you" role="group" aria-labelledby="nav-first-run">
         <p class="nav-group-label" id="nav-first-run">First run</p>
@@ -54,6 +55,7 @@
       <div class="nav-group nav-group--ops" role="group" aria-labelledby="nav-ops">
         <p class="nav-group-label" id="nav-ops">Ops</p>
         <a href="/" class="{{ 'active' if nav == 'dashboard' else '' }}" {% if nav == 'dashboard' %}aria-current="page"{% endif %}>Overview</a>
+        <a href="/ops/usage" class="{{ 'active' if ops_usage_on else '' }}" {% if ops_usage_on %}aria-current="page"{% endif %}>Usage</a>
       </div>
 
       <div class="nav-group nav-group--ops" role="group" aria-labelledby="nav-backends">

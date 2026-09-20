@@ -1,40 +1,65 @@
 {% extends "base.html" %}
-{% block title %}Usage daily · OnPrem AI Gateway{% endblock %}
+{% block title %}{% if ops_mode %}Ops usage{% else %}Usage{% endif %} daily · OnPrem AI Gateway{% endblock %}
 {% block content %}
 <header class="page-head page-head--compact">
   <div>
-    <h1>Usage</h1>
+    <h1>{% if ops_mode %}Ops usage{% else %}Usage{% endif %}</h1>
+    <p class="muted mt-0">Daily rollup · last {{ range_label }}</p>
   </div>
 </header>
 
 <nav class="subnav" aria-label="Usage views">
-  <a href="/usage">Events</a>
-  <a href="/usage/daily" class="is-active" aria-current="page">Daily rollup</a>
+  <a href="{{ events_href }}">Events</a>
+  <a href="{{ daily_href }}" class="is-active" aria-current="page">Daily rollup</a>
 </nav>
+
+{% include "_usage_filters.html" %}
 
 <div class="panel">
   <div class="table-wrap">
   <table>
     <caption class="sr-only">Daily usage aggregates</caption>
-    <thead><tr><th>Day</th>{% if teams_enabled %}<th>Team</th>{% endif %}<th>Key</th><th>Service</th><th>Model</th><th>OK</th><th>Deny</th><th>429</th></tr></thead>
+    <thead>
+      <tr>
+        <th>Day</th>
+        {% if ops_mode %}<th>Owner</th>{% endif %}
+        {% if teams_enabled %}<th>Team</th>{% endif %}
+        <th>Key</th>
+        <th>Service</th>
+        <th>Model</th>
+        <th>OK</th>
+        <th>Deny</th>
+        <th>429</th>
+        <th>Wh</th>
+      </tr>
+    </thead>
     <tbody>
     {% for r in rows %}
+      {% set om = owner_by_key.get(r.api_key_id) if r.api_key_id is not none else none %}
       <tr>
         <td class="mono">{{ r.day }}</td>
+        {% if ops_mode %}
+        <td>
+          {% if om and om.owner_user_id %}
+          <a href="{{ filter_action }}?owner_user_id={{ om.owner_user_id }}&amp;range={{ range_key }}">{{ om.owner_name }}</a>
+          {% else %}{{ om.owner_name if om else '—' }}{% endif %}
+        </td>
+        {% endif %}
         {% if teams_enabled %}<td>{{ r.team_name or '—' }}</td>{% endif %}
         <td>{{ r.key_label or '—' }}</td>
         <td>{{ r.service }}</td>
         <td class="mono">{{ r.model or '—' }}</td>
-        <td>{{ r.ok_count }}</td>
-        <td>{{ r.deny_count }}</td>
-        <td>{{ r.rate_limit_count }}</td>
+        <td class="num">{{ r.ok_count }}</td>
+        <td class="num">{{ r.deny_count }}</td>
+        <td class="num">{{ r.rate_limit_count }}</td>
+        <td class="num">{% if r.watt_hours %}{{ '%.3f'|format(r.watt_hours) }}{% else %}—{% endif %}</td>
       </tr>
     {% else %}
-      <tr><td colspan="{{ 8 if teams_enabled else 7 }}" class="empty-cell">
+      <tr><td colspan="{{ 10 if ops_mode and teams_enabled else (9 if ops_mode or teams_enabled else 8) }}" class="empty-cell">
         <div class="empty-state">
           <p class="empty-state-title">No aggregates yet</p>
-          <p class="empty-state-text">Daily rollups appear after traffic is recorded. Check Events for the live stream.</p>
-          <a class="btn" href="/usage">View events</a>
+          <p class="empty-state-text">Daily rollups appear after traffic is recorded. Check Events for the live stream, or widen filters.</p>
+          <a class="btn" href="{{ events_href }}">View events</a>
         </div>
       </td></tr>
     {% endfor %}

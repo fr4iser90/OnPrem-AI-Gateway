@@ -1,18 +1,21 @@
 {% extends "base.html" %}
-{% block title %}Usage · OnPrem AI Gateway{% endblock %}
+{% block title %}{% if ops_mode %}Ops usage{% else %}Usage{% endif %} · OnPrem AI Gateway{% endblock %}
 {% block content %}
 <header class="page-head page-head--compact">
   <div>
-    <h1>Usage</h1>
+    <h1>{% if ops_mode %}Ops usage{% else %}Usage{% endif %}</h1>
+    {% if ops_mode %}
+    <p class="muted mt-0">Fleet-wide events and energy across all users.</p>
+    {% endif %}
   </div>
   <div class="page-actions">
-    <a class="btn" href="/usage/export.csv?service={{ filters.service }}&team_id={{ filters.team_id }}&key_id={{ filters.key_id }}&result={{ filters.result }}">Export CSV</a>
+    <a class="btn" href="{{ export_href }}">Export CSV</a>
   </div>
 </header>
 
 <nav class="subnav" aria-label="Usage views">
-  <a href="/usage" class="is-active" aria-current="page">Events</a>
-  <a href="/usage/daily">Daily rollup</a>
+  <a href="{{ events_href }}" class="is-active" aria-current="page">Events</a>
+  <a href="{{ daily_href }}">Daily rollup</a>
 </nav>
 
 <section class="pulse" id="usage-summary">
@@ -35,16 +38,16 @@
       <div class="pulse-kpi-value" title="Estimated from GPU samples × request duration">{% if watt_hours_day %}{{ '%.2f'|format(watt_hours_day) }}<span class="unit">Wh</span>{% else %}—{% endif %}</div>
     </div>
     <div>
-      <div class="pulse-kpi-label">Approx. energy · 7d</div>
-      <div class="pulse-kpi-value" title="Estimated GPU energy for your keys">{% if watt_hours_week %}{{ '%.2f'|format(watt_hours_week) }}<span class="unit">Wh</span>{% else %}—{% endif %}</div>
+      <div class="pulse-kpi-label">Approx. energy · {{ range_label }}</div>
+      <div class="pulse-kpi-value" title="Estimated GPU energy for this view">{% if watt_hours_period %}{{ '%.2f'|format(watt_hours_period) }}<span class="unit">Wh</span>{% else %}—{% endif %}</div>
     </div>
     {% endif %}
   </div>
   {{ chart_daily | safe }}
-  <p class="pulse-foot">Throughput · last 7 days{% if gpu_power_enabled %} · Wh is approximate (sidecar samples){% endif %}</p>
+  <p class="pulse-foot">Throughput · last {{ range_label }}{% if gpu_power_enabled %} · Wh is approximate (sidecar samples){% endif %}</p>
 </section>
 
-{% if is_admin and live_slots %}
+{% if ops_mode and live_slots %}
 <section class="panel" id="live-slots">
   <div class="panel-head">
     <div class="panel-head-text">
@@ -73,11 +76,11 @@
 {% endif %}
 
 {% if gpu_power_enabled and (energy_by_owner or energy_by_key) %}
-{% if is_admin and energy_by_owner %}
+{% if ops_mode and energy_by_owner %}
 <section class="panel" id="energy-by-owner">
   <div class="panel-head">
     <div class="panel-head-text">
-      <h2>Energy by owner · 7d</h2>
+      <h2>Energy by owner · {{ range_label }}</h2>
       <p class="panel-sub">Approximate Wh rolled up across each user’s keys.</p>
     </div>
   </div>
@@ -91,7 +94,7 @@
         <tr>
           <td>
             {% if r.owner_user_id %}
-            <a href="/keys?owner_user_id={{ r.owner_user_id }}">{{ r.owner_name }}</a>
+            <a href="{{ base_path }}?owner_user_id={{ r.owner_user_id }}&amp;range={{ range_key }}">{{ r.owner_name }}</a>
             {% else %}{{ r.owner_name }}{% endif %}
           </td>
           <td class="num">{{ r.key_count }}</td>
@@ -110,19 +113,19 @@
 <section class="panel" id="energy-by-key">
   <div class="panel-head">
     <div class="panel-head-text">
-      <h2>Energy by key · 7d</h2>
-      <p class="panel-sub">One row per key (same label, different owners stay separate).</p>
+      <h2>Energy by key · {{ range_label }}</h2>
+      <p class="panel-sub">{% if ops_mode %}One row per key (same label, different owners stay separate).{% else %}Your keys only.{% endif %}</p>
     </div>
   </div>
   <div class="table-wrap">
     <table class="table-compact">
       <thead>
-        <tr>{% if is_admin %}<th>Owner</th>{% endif %}<th>Key</th><th>OK</th><th>avg W</th><th>Wh</th></tr>
+        <tr>{% if ops_mode %}<th>Owner</th>{% endif %}<th>Key</th><th>OK</th><th>avg W</th><th>Wh</th></tr>
       </thead>
       <tbody>
       {% for r in energy_by_key %}
         <tr>
-          {% if is_admin %}
+          {% if ops_mode %}
           <td>
             {% if r.owner_user_id %}
             <a href="/keys?owner_user_id={{ r.owner_user_id }}">{{ r.owner_name }}</a>
@@ -142,52 +145,7 @@
 {% endif %}
 {% endif %}
 
-<div class="panel panel-toolbar" role="search">
-  <form method="get" action="/usage" class="row" aria-label="Filter usage events">
-    <div class="field">
-      <label for="usage-service">Service</label>
-      <select id="usage-service" name="service">
-        <option value="">all</option>
-        {% for s in services %}
-        <option value="{{ s }}" {% if filters.service == s %}selected{% endif %}>{{ s }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    {% if teams_enabled %}
-    <div class="field">
-      <label for="usage-team">Team</label>
-      <select id="usage-team" name="team_id">
-        <option value="">all</option>
-        {% for t in teams %}
-        <option value="{{ t.id }}" {% if filters.team_id|string == t.id|string %}selected{% endif %}>{{ t.name }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    {% endif %}
-    <div class="field">
-      <label for="usage-key">Key</label>
-      <select id="usage-key" name="key_id">
-        <option value="">all</option>
-        {% for k in keys %}
-        <option value="{{ k.id }}" {% if filters.key_id|string == k.id|string %}selected{% endif %}>{{ k.label }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div class="field">
-      <label for="usage-result">Result</label>
-      <select id="usage-result" name="result">
-        <option value="">all</option>
-        <option value="ok" {% if filters.result == 'ok' %}selected{% endif %}>ok</option>
-        <option value="deny" {% if filters.result == 'deny' %}selected{% endif %}>deny</option>
-        <option value="rate_limit" {% if filters.result == 'rate_limit' %}selected{% endif %}>rate_limit</option>
-      </select>
-    </div>
-    <div class="field field--btn">
-      <label class="sr-only" for="usage-filter-submit">Apply filters</label>
-      <input id="usage-filter-submit" class="primary" type="submit" value="Filter">
-    </div>
-  </form>
-</div>
+{% include "_usage_filters.html" %}
 
 <div class="panel" id="usage-events">
   <div class="panel-head">
@@ -197,6 +155,7 @@
     <thead>
       <tr>
         <th>Time</th>
+        {% if ops_mode %}<th>Owner</th>{% endif %}
         {% if teams_enabled %}<th>Team</th>{% endif %}
         <th>Key</th>
         <th>Service</th>
@@ -213,8 +172,16 @@
     </thead>
     <tbody>
     {% for e in events %}
+      {% set om = owner_by_key.get(e.api_key_id) if e.api_key_id is not none else none %}
       <tr>
         <td class="mono">{{ e.created_at }}</td>
+        {% if ops_mode %}
+        <td>
+          {% if om and om.owner_user_id %}
+          <a href="{{ base_path }}?owner_user_id={{ om.owner_user_id }}&amp;range={{ range_key }}">{{ om.owner_name }}</a>
+          {% else %}{{ om.owner_name if om else '—' }}{% endif %}
+        </td>
+        {% endif %}
         {% if teams_enabled %}<td>{{ e.team_name or '—' }}</td>{% endif %}
         <td>{{ e.key_label or '—' }}{% if e.is_demo %} <span class="badge">demo</span>{% endif %}</td>
         <td><span class="badge">{{ e.service }}</span></td>
@@ -235,11 +202,11 @@
         </td>
       </tr>
     {% else %}
-      <tr><td colspan="13" class="empty-cell">
+      <tr><td colspan="14" class="empty-cell">
         <div class="empty-state">
           <p class="empty-state-title">No events</p>
-          <p class="empty-state-text">Usage appears after API calls with your keys. Adjust filters above, or try Daily rollup.</p>
-          <a class="btn" href="/usage/daily">Daily rollup</a>
+          <p class="empty-state-text">{% if ops_mode %}No fleet usage matches these filters yet.{% else %}Usage appears after API calls with your keys. Adjust filters above, or try Daily rollup.{% endif %}</p>
+          <a class="btn" href="{{ daily_href }}">Daily rollup</a>
         </div>
       </td></tr>
     {% endfor %}
@@ -249,7 +216,7 @@
 
 <section class="panel" id="usage-models">
   <div class="panel-head">
-    <h2>Model averages · 7d</h2>
+    <h2>Model averages · {{ range_label }}</h2>
   </div>
   {% if model_avgs %}
   <div class="table-wrap">
@@ -282,7 +249,7 @@
     </table>
   </div>
   {% else %}
-  <p class="muted">No metered chat yet in the last 7 days.</p>
+  <p class="muted">No metered chat yet in the last {{ range_label }}.</p>
   {% endif %}
 </section>
 
@@ -293,10 +260,18 @@
   {% if daily_rows %}
   <div class="table-wrap">
     <table>
-      <thead><tr>{% if teams_enabled %}<th>Team</th>{% endif %}<th>Key</th><th>Service</th><th>Model</th><th>OK</th><th>Tokens in</th>{% if gpu_power_enabled %}<th>Wh</th>{% endif %}<th>Pool</th><th>Audio s</th></tr></thead>
+      <thead><tr>{% if ops_mode %}<th>Owner</th>{% endif %}{% if teams_enabled %}<th>Team</th>{% endif %}<th>Key</th><th>Service</th><th>Model</th><th>OK</th><th>Tokens in</th>{% if gpu_power_enabled %}<th>Wh</th>{% endif %}<th>Pool</th><th>Audio s</th></tr></thead>
       <tbody>
       {% for r in daily_rows %}
+        {% set om = owner_by_key.get(r.api_key_id) if r.api_key_id is not none else none %}
         <tr>
+          {% if ops_mode %}
+          <td>
+            {% if om and om.owner_user_id %}
+            <a href="{{ base_path }}?owner_user_id={{ om.owner_user_id }}&amp;range={{ range_key }}">{{ om.owner_name }}</a>
+            {% else %}{{ om.owner_name if om else '—' }}{% endif %}
+          </td>
+          {% endif %}
           {% if teams_enabled %}<td>{{ r.team_name or '—' }}</td>{% endif %}
           <td>{{ r.key_label or '—' }}</td>
           <td>{{ r.service }}</td>

@@ -20,8 +20,6 @@ from ..data.models import (
     AuditLog,
     ModelLimit,
     Team,
-    UsageDaily,
-    UsageEvent,
     utcnow,
 )
 from .session import (
@@ -29,7 +27,6 @@ from .session import (
     can_access_team,
     require_platform_admin,
     require_user,
-    scoped_key_ids,
     user_teams,
 )
 from .templating import make_templates
@@ -154,33 +151,6 @@ def audit_page(
             "is_admin": True,
             "chain_ok": chain_ok,
             "chain_msg": chain_msg,
-        },
-    )
-
-
-@router.get("/usage/daily", response_class=HTMLResponse)
-def usage_daily_page(
-    request: Request,
-    db: Annotated[Session, Depends(get_db)],
-    user: Annotated[WebUser, Depends(require_user)],
-):
-    from .accounts import teams_feature_enabled
-
-    teams_on = teams_feature_enabled(db)
-    q = db.query(UsageDaily).order_by(UsageDaily.day.desc(), UsageDaily.ok_count.desc())
-    if not user.is_platform_admin:
-        visible_ids = scoped_key_ids(db, user, teams_enabled=teams_on)
-        q = q.filter(UsageDaily.api_key_id.in_(visible_ids)) if visible_ids else q.filter(False)
-    rows = q.limit(300).all()
-    return templates.TemplateResponse(
-        request,
-        "usage_daily.html",
-        {
-            "user": user,
-            "rows": rows,
-            "nav": "usage",
-            "is_admin": user.is_platform_admin,
-            "teams_enabled": teams_on,
         },
     )
 

@@ -1,0 +1,69 @@
+{# Shared usage filters — Events and Daily. Expects: filter_action, filters, range_options,
+   range_key, ops_mode, owners, services, teams, keys, teams_enabled, show_result_filter #}
+<div class="panel panel-toolbar" role="search">
+  <form method="get" action="{{ filter_action }}" class="row" aria-label="Filter usage">
+    <div class="field">
+      <label for="usage-range">Range</label>
+      <select id="usage-range" name="range">
+        {% for opt in range_options %}
+        <option value="{{ opt.key }}" {% if range_key == opt.key %}selected{% endif %}>{{ opt.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% if ops_mode and owners %}
+    <div class="field">
+      <label for="usage-owner">Owner</label>
+      <select id="usage-owner" name="owner_user_id">
+        <option value="">all</option>
+        {% for o in owners %}
+        <option value="{{ o.id }}" {% if filters.owner_user_id|string == o.id|string %}selected{% endif %}>{{ o|display_name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
+    <div class="field">
+      <label for="usage-service">Service</label>
+      <select id="usage-service" name="service">
+        <option value="">all</option>
+        {% for s in services %}
+        <option value="{{ s }}" {% if filters.service == s %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% if teams_enabled %}
+    <div class="field">
+      <label for="usage-team">Team</label>
+      <select id="usage-team" name="team_id">
+        <option value="">all</option>
+        {% for t in teams %}
+        <option value="{{ t.id }}" {% if filters.team_id|string == t.id|string %}selected{% endif %}>{{ t.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
+    <div class="field">
+      <label for="usage-key">Key</label>
+      <select id="usage-key" name="key_id">
+        <option value="">all</option>
+        {% for k in keys %}
+        <option value="{{ k.id }}" {% if filters.key_id|string == k.id|string %}selected{% endif %}>{{ k.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% if show_result_filter %}
+    <div class="field">
+      <label for="usage-result">Result</label>
+      <select id="usage-result" name="result">
+        <option value="">all</option>
+        <option value="ok" {% if filters.result == 'ok' %}selected{% endif %}>ok</option>
+        <option value="deny" {% if filters.result == 'deny' %}selected{% endif %}>deny</option>
+        <option value="rate_limit" {% if filters.result == 'rate_limit' %}selected{% endif %}>rate_limit</option>
+      </select>
+    </div>
+    {% endif %}
+    <div class="field field--btn">
+      <label class="sr-only" for="usage-filter-submit">Apply filters</label>
+      <input id="usage-filter-submit" class="primary" type="submit" value="Filter">
+    </div>
+  </form>
+</div>
