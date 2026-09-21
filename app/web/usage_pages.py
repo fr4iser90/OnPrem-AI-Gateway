@@ -5,10 +5,11 @@ from __future__ import annotations
 import csv
 import io
 from datetime import timedelta
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import urlencode
 
 from fastapi.responses import StreamingResponse
+from pydantic import BeforeValidator
 from sqlalchemy.orm import Session, joinedload
 
 from ..data.backends import source_names
@@ -25,6 +26,18 @@ from ..stats import (
 from .accounts import get_auth_settings, user_display_name
 from .session import Forbidden, user_team_ids, user_teams
 from .shared import _gpu_power_enabled, _teams_on
+
+
+def _blank_query_to_none(v: object) -> object:
+    """HTML selects submit '' for 'all' — treat as missing optional int."""
+    if v is None:
+        return None
+    if isinstance(v, str) and not v.strip():
+        return None
+    return v
+
+
+OptionalQueryInt = Annotated[int | None, BeforeValidator(_blank_query_to_none)]
 
 
 def resolve_usage_range(

@@ -249,6 +249,13 @@ def test_you_usage_is_self_scoped_for_admin(sec):
     assert "<th>Owner</th>" not in you_daily.text
     assert 'name="range"' in you_daily.text
 
+    # HTML <select> submits key_id="" for "all" — must not 422
+    empty_filter = client.get(
+        "/ops/usage?key_id=&team_id=&owner_user_id=&range=7",
+        follow_redirects=False,
+    )
+    assert empty_filter.status_code == 200, empty_filter.text[:500]
+
 
 def test_users_page_links_create_key_for_members(sec):
     client, world = sec

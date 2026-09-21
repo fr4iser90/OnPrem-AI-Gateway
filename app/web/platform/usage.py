@@ -13,6 +13,7 @@ from ...data.models import WebUser
 from ..session import require_platform_admin
 from ..shared import templates
 from ..usage_pages import (
+    OptionalQueryInt,
     build_daily_page_context,
     build_usage_page_context,
     usage_csv_response,
@@ -27,11 +28,11 @@ def ops_usage_page(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[WebUser, Depends(require_platform_admin)],
     service: str | None = None,
-    team_id: int | None = None,
-    key_id: int | None = None,
+    team_id: OptionalQueryInt = None,
+    key_id: OptionalQueryInt = None,
     result: str | None = None,
     range: str | None = None,
-    owner_user_id: int | None = None,
+    owner_user_id: OptionalQueryInt = None,
 ):
     ctx = build_usage_page_context(
         request,
@@ -54,10 +55,10 @@ def ops_usage_daily_page(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[WebUser, Depends(require_platform_admin)],
     service: str | None = None,
-    team_id: int | None = None,
-    key_id: int | None = None,
+    team_id: OptionalQueryInt = None,
+    key_id: OptionalQueryInt = None,
     range: str | None = None,
-    owner_user_id: int | None = None,
+    owner_user_id: OptionalQueryInt = None,
 ):
     ctx = build_daily_page_context(
         request,
@@ -79,10 +80,10 @@ def ops_usage_export(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[WebUser, Depends(require_platform_admin)],
     service: str | None = None,
-    team_id: int | None = None,
-    key_id: int | None = None,
+    team_id: OptionalQueryInt = None,
+    key_id: OptionalQueryInt = None,
     result: str | None = None,
-    owner_user_id: int | None = None,
+    owner_user_id: OptionalQueryInt = None,
 ):
     return usage_csv_response(
         db,
