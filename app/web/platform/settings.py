@@ -291,12 +291,14 @@ def settings_routing_save(
     catalog_auto_sync_minutes: str = Form("30"),
     soft_sampling_defaults: str = Form(""),
     source_queue_timeout_sec: str = Form("30"),
+    source_admission_max_hold_sec: str = Form("0"),
     auto_model_default: str = Form(""),
     auto_model_quality: str = Form(""),
     auto_model_long: str = Form(""),
 ):
     from ..accounts import get_auth_settings
 
+    from ...auth.source_admission import clamp_max_hold_sec, source_admission_gate
     from ...catalog_auto_sync import clamp_auto_sync_minutes
     from ...data.routing_strategy import normalize_routing_strategy
 
@@ -317,6 +319,8 @@ def settings_routing_save(
         )
     except ValueError:
         auth.source_queue_timeout_sec = 30
+    auth.source_admission_max_hold_sec = clamp_max_hold_sec(source_admission_max_hold_sec)
+    source_admission_gate.configure(max_hold_sec=auth.source_admission_max_hold_sec)
     auth.auto_model_default = (auto_model_default or "").strip()[:256]
     auth.auto_model_quality = (auto_model_quality or "").strip()[:256]
     auth.auto_model_long = (auto_model_long or "").strip()[:256]
@@ -332,7 +336,8 @@ def settings_routing_save(
             f"catalog_prune={auth.catalog_prune_on_sync} "
             f"catalog_auto_sync={auth.catalog_auto_sync}/{auth.catalog_auto_sync_minutes}m "
             f"soft_sampling={auth.soft_sampling_defaults} "
-            f"queue_s={auth.source_queue_timeout_sec}"
+            f"queue_s={auth.source_queue_timeout_sec} "
+            f"max_hold_s={auth.source_admission_max_hold_sec}"
         ),
     )
     db.commit()

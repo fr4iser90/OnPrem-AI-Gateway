@@ -132,6 +132,10 @@ def fingerprint_engine(
     hints = f"{header_hints} {body_hints}".lower()
     paths = set(probes_ok)
 
+    # Gufo before /slots: it ships placeholder llama-shaped /slots and /props.
+    if "owned_by:gufo" in hints:
+        return "gufo"
+
     if slots_total is not None or "/slots" in paths:
         return "llama.cpp"
     # llama.cpp router mode: GET /props → {"role":"router", ...}

@@ -47,11 +47,22 @@
       <input id="source-queue-timeout" type="number" name="source_queue_timeout_sec" min="1" max="600"
              value="{{ auth.source_queue_timeout_sec or 30 }}">
     </div>
+    <div class="field field-gap-sm">
+      <label for="source-max-hold">Max source slot hold (seconds)</label>
+      <input id="source-max-hold" type="number" name="source_admission_max_hold_sec" min="0" max="86400"
+             value="{{ auth.source_admission_max_hold_sec or 0 }}">
+      <p class="muted mt-0 text-sm">
+        <span class="mono">0</span> = no wall-clock cap (slot freed when the stream ends).
+        Otherwise the gateway <strong>aborts the upstream stream</strong> after this many seconds,
+        then releases the slot in <span class="mono">finally</span> (1–86400). Does not silently
+        steal the counter while the stream keeps running.
+      </p>
+    </div>
     <p class="muted field-gap-sm">
       Strict preflight uses engine-specific APIs (<span class="mono">/slots</span>, <span class="mono">/api/ps</span>, <span class="mono">/metrics</span>) — no fail-open.
       Busy/loading → <span class="mono">503</span> + <span class="mono">Retry-After</span> + <span class="mono">retryable: true</span>.
       Unreachable / probe failed → <span class="mono">502</span> + <span class="mono">retryable: false</span> (no Retry-After), so agents do not loop.
-      Admission queue: holds a per-source slot (from <span class="mono">max_concurrency</span> or engine <span class="mono">/props</span> slots) with team priority until the stream ends.
+      Admission queue: holds a per-source slot (from <span class="mono">max_concurrency</span> or engine <span class="mono">/props</span> slots) with team priority until the stream ends (or max hold abort).
     </p>
 
     <h3 class="section-label field-gap-md">Auto model aliases</h3>

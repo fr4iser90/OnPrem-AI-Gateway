@@ -510,6 +510,8 @@ class AuthSettings(Base):
     # Per-source admission queue (after strict preflight, before proxy).
     source_admission_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     source_queue_timeout_sec: Mapped[int] = mapped_column(Integer, default=30)
+    # Max seconds a key may hold a source slot (0 = until stream ends only).
+    source_admission_max_hold_sec: Mapped[int] = mapped_column(Integer, default=0)
     # After sync: disable catalog rows no longer listed upstream (per source).
     catalog_prune_on_sync: Mapped[bool] = mapped_column(Boolean, default=True)
     # When on: chat requests missing temperature/etc. get catalog recommended_sampling

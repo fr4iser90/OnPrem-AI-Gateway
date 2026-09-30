@@ -195,6 +195,39 @@ def test_parse_openai_model_item_loaded_and_unloaded():
     assert unloaded.n_embd is None
 
 
+def test_parse_openai_model_item_gufo_context_length():
+    """Gufo /v1/models: context_length only (no status.args / meta)."""
+    from app.data.catalog import parse_openai_model_item
+
+    disc = parse_openai_model_item(
+        {
+            "id": "Qwen3.8-Flash-Next",
+            "object": "model",
+            "owned_by": "gufo",
+            "context_length": 262144,
+        }
+    )
+    assert disc is not None
+    assert disc.model_id == "Qwen3.8-Flash-Next"
+    assert disc.ctx_size == 262144
+    assert disc.has_meta is False
+    assert disc.n_parallel is None
+
+
+def test_parse_openai_model_item_ctx_size_args_beat_context_length():
+    from app.data.catalog import parse_openai_model_item
+
+    disc = parse_openai_model_item(
+        {
+            "id": "x",
+            "status": {"value": "loaded", "args": ["--ctx-size", "8192"]},
+            "context_length": 262144,
+        }
+    )
+    assert disc is not None
+    assert disc.ctx_size == 8192
+
+
 def test_parallel_from_args():
     from app.data.catalog import parallel_from_args
 

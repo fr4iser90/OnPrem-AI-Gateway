@@ -115,6 +115,7 @@ def _source_admission_block(
             getattr(auth_cfg, "source_queue_timeout_sec", 30) or 30
         ),
         enabled=True,
+        max_hold_sec=int(getattr(auth_cfg, "source_admission_max_hold_sec", 0) or 0),
     )
     if outcome.acquired:
         return None
@@ -582,15 +583,24 @@ def create_app() -> FastAPI:
         usage_id: int | None,
         probe_url: str = "",
         concurrency_lease: ConcurrencyLease | None = None,
+        max_hold_sec: int = 0,
     ):
-        """Shared streaming proxy + per-source GPU sample → finalize UsageEvent."""
+        """Shared streaming proxy + per-source GPU sample → finalize UsageEvent.
+
+        max_hold_sec > 0: wall-clock kill of the upstream stream, then finally
+        releases the admission/concurrency lease (no silent slot steal).
+        """
         import asyncio
         import time as time_mod
+        from contextlib import suppress
 
         from .audit import finalize_usage_metering
+        from .auth.source_admission import clamp_max_hold_sec
         from .data.db import SessionLocal
         from .metering_parse import parse_upstream_metrics
         from .usage_pool import fetch_gpu_watts, watt_hours_from_samples
+
+        hold_sec = clamp_max_hold_sec(max_hold_sec)
 
         # Cap buffered body for usage/timings parse (keep full for small JSON; tail for huge SSE).
         _BUF_MAX = 2 * 1024 * 1024
@@ -614,7 +624,12 @@ def create_app() -> FastAPI:
 
         await _sample()
         t0 = time_mod.perf_counter()
-        client = httpx.AsyncClient(timeout=httpx.Timeout(3600.0, connect=10.0))
+        # Cap total/read wait at max hold when set; otherwise long streams OK.
+        if hold_sec > 0:
+            client_timeout = httpx.Timeout(hold_sec, connect=10.0)
+        else:
+            client_timeout = httpx.Timeout(3600.0, connect=10.0)
+        client = httpx.AsyncClient(timeout=client_timeout)
         try:
             upstream = await client.send(
                 client.build_request(method, url, headers=headers, content=body),
@@ -663,6 +678,15 @@ def create_app() -> FastAPI:
             last_sample = time_mod.perf_counter()
             buf = bytearray()
             truncated = False
+            watchdog: asyncio.Task | None = None
+
+            async def _kill_after_hold() -> None:
+                await asyncio.sleep(hold_sec)
+                with suppress(Exception):
+                    await upstream.aclose()
+
+            if hold_sec > 0:
+                watchdog = asyncio.create_task(_kill_after_hold())
             try:
                 async for chunk in upstream.aiter_raw():
                     now = time_mod.perf_counter()
@@ -684,6 +708,10 @@ def create_app() -> FastAPI:
                             del buf[: len(buf) - _BUF_TAIL]
                     yield chunk
             finally:
+                if watchdog is not None:
+                    watchdog.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await watchdog
                 await upstream.aclose()
                 await client.aclose()
                 release_concurrency_lease(concurrency_lease)
@@ -903,6 +931,7 @@ def create_app() -> FastAPI:
             usage_id=result.usage_event_id,
             probe_url=probe_url_for_source(src_row),
             concurrency_lease=entry_lease,
+            max_hold_sec=int(getattr(auth_cfg, "source_admission_max_hold_sec", 0) or 0),
         )
 
     @app.api_route("/v1/onprem/forward", methods=["POST", "PUT", "PATCH"])
@@ -1023,6 +1052,11 @@ def create_app() -> FastAPI:
             usage_id=usage_id_int,
             probe_url=probe,
             concurrency_lease=lease,
+            max_hold_sec=int(
+                getattr(auth_cfg, "source_admission_max_hold_sec", 0) or 0
+            )
+            if auth_cfg is not None
+            else 0,
         )
 
     app.include_router(web_router)

@@ -19,10 +19,16 @@ class _Waiter:
 
 
 @dataclass
+class _Holder:
+    key_id: int
+    held_at: float
+
+
+@dataclass
 class _GateState:
     limit: int
     inflight: int = 0
-    holders: list[int] = field(default_factory=list)  # api_key_id per held slot
+    holders: list[_Holder] = field(default_factory=list)
     waiters: list[_Waiter] = field(default_factory=list)
 
 
@@ -72,12 +78,44 @@ def resolve_queue_timeout(
     return float(max(1, platform_timeout))
 
 
+def clamp_max_hold_sec(raw: object) -> int:
+    """0 = disabled; otherwise 1..86400 seconds (stream wall-clock kill)."""
+    try:
+        value = int(raw or 0)
+    except (TypeError, ValueError):
+        return 0
+    if value <= 0:
+        return 0
+    return max(1, min(86400, value))
+
+
 class SourceAdmissionGate:
-    """One semaphore per upstream address (host:port)."""
+    """One semaphore per upstream address (host:port).
+
+    Slots are only freed via release() (stream end / abort). There is no
+    silent counter reclaim — max hold is enforced by killing the stream
+    (see main._stream_upstream_metered), which then releases the lease.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._gates: dict[str, _GateState] = {}
+        self._max_hold_sec = 0
+
+    def configure(self, *, max_hold_sec: int | None = None) -> None:
+        if max_hold_sec is not None:
+            self._max_hold_sec = clamp_max_hold_sec(max_hold_sec)
+
+    @property
+    def max_hold_sec(self) -> int:
+        return self._max_hold_sec
+
+    def _promote_waiters(self, gate: _GateState, now: float) -> None:
+        while gate.waiters and gate.inflight < gate.limit:
+            next_waiter = gate.waiters.pop(0)
+            gate.inflight += 1
+            gate.holders.append(_Holder(key_id=int(next_waiter.key_id), held_at=now))
+            next_waiter.event.set()
 
     def acquire(
         self,
@@ -87,11 +125,14 @@ class SourceAdmissionGate:
         key_id: int,
         priority: int,
         timeout: float,
+        max_hold_sec: int | None = None,
     ) -> bool:
         key = (source_key or "").strip()
         if not key or limit <= 0:
             return True
 
+        if max_hold_sec is not None:
+            self._max_hold_sec = clamp_max_hold_sec(max_hold_sec)
         deadline = time.time() + timeout
         event = threading.Event()
         waiter = _Waiter(sort_key=(-priority, time.time()), event=event, key_id=key_id)
@@ -99,9 +140,10 @@ class SourceAdmissionGate:
         with self._lock:
             gate = self._gates.setdefault(key, _GateState(limit=limit))
             gate.limit = limit
+            now = time.time()
             if gate.inflight < gate.limit and not gate.waiters:
                 gate.inflight += 1
-                gate.holders.append(int(key_id))
+                gate.holders.append(_Holder(key_id=int(key_id), held_at=now))
                 return True
             gate.waiters.append(waiter)
             gate.waiters.sort()
@@ -123,21 +165,22 @@ class SourceAdmissionGate:
             gate = self._gates.get(key)
             if gate is None:
                 return
+            if key_id is not None:
+                kid = int(key_id)
+                for i, holder in enumerate(gate.holders):
+                    if holder.key_id == kid:
+                        gate.holders.pop(i)
+                        break
+                else:
+                    # Double-release — do not steal another holder's slot.
+                    return
+            elif gate.holders:
+                gate.holders.pop(0)
+            else:
+                return
             if gate.inflight > 0:
                 gate.inflight -= 1
-            if gate.holders:
-                if key_id is not None:
-                    try:
-                        gate.holders.remove(int(key_id))
-                    except ValueError:
-                        gate.holders.pop(0)
-                else:
-                    gate.holders.pop(0)
-            while gate.waiters and gate.inflight < gate.limit:
-                next_waiter = gate.waiters.pop(0)
-                gate.inflight += 1
-                gate.holders.append(int(next_waiter.key_id))
-                next_waiter.event.set()
+            self._promote_waiters(gate, time.time())
 
     def snapshot(self, source_key: str) -> tuple[int | None, int | None]:
         """Return (inflight, limit) for this upstream address, or (None, None)."""
@@ -162,7 +205,7 @@ class SourceAdmissionGate:
                 source_key=key,
                 inflight=gate.inflight,
                 limit=gate.limit,
-                holder_key_ids=tuple(gate.holders),
+                holder_key_ids=tuple(h.key_id for h in gate.holders),
                 queued_key_ids=tuple(w.key_id for w in gate.waiters),
             )
 
@@ -177,7 +220,7 @@ class SourceAdmissionGate:
                         source_key=addr,
                         inflight=gate.inflight,
                         limit=gate.limit,
-                        holder_key_ids=tuple(gate.holders),
+                        holder_key_ids=tuple(h.key_id for h in gate.holders),
                         queued_key_ids=tuple(w.key_id for w in gate.waiters),
                     )
                 )
@@ -197,6 +240,7 @@ def try_acquire_source_admission(
     priority: int,
     platform_queue_timeout_sec: int,
     enabled: bool = True,
+    max_hold_sec: int = 0,
 ) -> SourceAdmissionOutcome:
     """Acquire a per-source slot. No gate when limit cannot be resolved."""
     if not enabled:
@@ -246,12 +290,14 @@ def try_acquire_source_admission(
         source_timeout=src.queue_timeout_sec,
         platform_timeout=platform_queue_timeout_sec,
     )
+    source_admission_gate.configure(max_hold_sec=max_hold_sec)
     ok = source_admission_gate.acquire(
         addr,
         limit=limit,
         key_id=key_id,
         priority=priority,
         timeout=timeout,
+        max_hold_sec=max_hold_sec,
     )
     if ok:
         return SourceAdmissionOutcome(acquired=True, limit=limit)
@@ -269,12 +315,17 @@ def live_admission_rows(db) -> list[dict]:
     from ..data.backends import list_sources
     from ..data.models import ApiKey
     from ..data.source_capacity import format_slots_label
+    from ..web.accounts import get_auth_settings
 
     by_addr = {
         (s.address or "").strip(): s
         for s in list_sources(db)
         if (s.address or "").strip()
     }
+    auth = get_auth_settings(db)
+    source_admission_gate.configure(
+        max_hold_sec=clamp_max_hold_sec(getattr(auth, "source_admission_max_hold_sec", 0))
+    )
     snaps = source_admission_gate.all_snapshots()
     if not snaps:
         return []

@@ -424,6 +424,12 @@ def parse_openai_model_item(item: dict) -> DiscoveredModel | None:
         args = status.get("args")
         disc.ctx_size = ctx_size_from_args(args)
         disc.n_parallel = parallel_from_args(args)
+    # Gufo / OpenAI-style listings: top-level context_length (no status.args).
+    # Prefer llama.cpp --ctx-size when both are present.
+    if disc.ctx_size is None:
+        disc.ctx_size = _as_int(item.get("context_length"))
+    if disc.ctx_size is None:
+        disc.ctx_size = _as_int(item.get("max_model_len"))
     arch = item.get("architecture")
     if isinstance(arch, dict):
         disc.modalities_in = _join_modalities(arch.get("input_modalities"))

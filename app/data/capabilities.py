@@ -92,6 +92,14 @@ ENGINE_PROFILES: dict[str, EngineProfile] = {
         label="LM Studio",
         kinds=frozenset({"chat", "embed", "extractor"}),
     ),
+    "gufo": EngineProfile(
+        id="gufo",
+        label="Gufo (OpenAI-compatible; placeholder /slots)",
+        kinds=frozenset({"chat", "embed", "extractor", "stt", "tts"}),
+        # Gufo exposes llama-shaped /slots and /props as placeholders — do not
+        # use them for gateway admission; set max_concurrency on the source.
+        slot_admission=False,
+    ),
     "openai-api": EngineProfile(
         id="openai-api",
         label="OpenAI-compatible (no slot API)",
@@ -670,7 +678,7 @@ def _run_profile_check(
         return _check_reachability(
             client, base, kind=kind, engine=profile.id, paths=("/info", "/health")
         )
-    if profile.id in {"localai", "lmstudio", "openai-api"}:
+    if profile.id in {"localai", "lmstudio", "openai-api", "gufo"}:
         paths = ("/health", "/v1/health", "/v1/models")
         if kind == "embed":
             paths = ("/health", "/v1/health", "/info", "/v1/models")

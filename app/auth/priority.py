@@ -16,18 +16,23 @@ class _Waiter:
 
 class PriorityGate:
     """
-    Global concurrency slots with priority fairness.
-    Higher priority values are served first when a slot frees.
+    Optional global concurrency slots with priority fairness.
+
+    global_slots <= 0: disabled (always acquire) — no fleet-wide 429.
+    global_slots > 0: hard cap; higher priority values are served first when a slot frees.
     """
 
-    def __init__(self, global_slots: int = 32) -> None:
-        self.global_slots = global_slots
+    def __init__(self, global_slots: int = 0) -> None:
+        self.global_slots = int(global_slots)
         self._lock = threading.Lock()
         self._inflight = 0
         self._waiters: list[_Waiter] = []
         self._key_inflight: dict[int, int] = defaultdict(int)
 
     def acquire(self, *, key_id: int, priority: int, timeout: float = 2.0) -> bool:
+        if self.global_slots <= 0:
+            return True
+
         deadline = time.time() + timeout
         event = threading.Event()
         # Negate priority so higher priority sorts first; then FIFO by time
@@ -50,6 +55,8 @@ class PriorityGate:
         return True
 
     def release(self, key_id: int) -> None:
+        if self.global_slots <= 0:
+            return
         with self._lock:
             if self._key_inflight[key_id] > 0:
                 self._key_inflight[key_id] -= 1
@@ -65,4 +72,7 @@ class PriorityGate:
             waiter.event.set()
 
 
-priority_gate = PriorityGate(global_slots=32)
+# Default off: a hard fleet-wide slot cap was returning 429 to every key
+# (including those with no RPM) when streams leaked. Per-key / team / user
+# limits and source-admission priority ordering still apply.
+priority_gate = PriorityGate(global_slots=0)

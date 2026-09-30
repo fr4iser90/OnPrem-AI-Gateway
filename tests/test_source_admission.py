@@ -26,6 +26,11 @@ def test_resolve_admission_limit_auto_from_slots():
     assert (
         resolve_admission_limit(max_concurrency=None, engine="ollama", slots_total=3) is None
     )
+    # Gufo placeholder /slots must not become the admission limit.
+    assert (
+        resolve_admission_limit(max_concurrency=None, engine="gufo", slots_total=3) is None
+    )
+    assert resolve_admission_limit(max_concurrency=2, engine="gufo", slots_total=3) == 2
 
 
 def test_gate_priority_queue():
@@ -113,3 +118,58 @@ def test_gate_tracks_holders():
 def test_resolve_queue_timeout():
     assert resolve_queue_timeout(source_timeout=10, platform_timeout=30) == 10.0
     assert resolve_queue_timeout(source_timeout=None, platform_timeout=25) == 25.0
+
+
+def test_clamp_max_hold_sec():
+    from app.auth.source_admission import clamp_max_hold_sec
+
+    assert clamp_max_hold_sec(0) == 0
+    assert clamp_max_hold_sec("") == 0
+    assert clamp_max_hold_sec(-5) == 0
+    assert clamp_max_hold_sec(90) == 90
+    assert clamp_max_hold_sec(999999) == 86400
+
+
+def test_gate_never_silently_drops_holders(monkeypatch):
+    """Max-hold must not free the counter while the stream is still alive."""
+    gate = SourceAdmissionGate()
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(time, "time", lambda: clock["t"])
+
+    assert gate.acquire("h:ttl", limit=1, key_id=1, priority=0, timeout=0.1, max_hold_sec=30)
+    clock["t"] = 1040.0
+    assert gate.acquire("h:ttl", limit=1, key_id=2, priority=0, timeout=0.05, max_hold_sec=30) is False
+    detail = gate.snapshot_detail("h:ttl")
+    assert detail is not None
+    assert detail.holder_key_ids == (1,)
+    gate.release("h:ttl", key_id=1)
+    assert gate.acquire("h:ttl", limit=1, key_id=2, priority=0, timeout=0.1, max_hold_sec=30)
+    gate.release("h:ttl", key_id=2)
+
+
+def test_all_snapshots_keeps_holders_until_release(monkeypatch):
+    gate = SourceAdmissionGate()
+    clock = {"t": 500.0}
+    monkeypatch.setattr(time, "time", lambda: clock["t"])
+
+    assert gate.acquire("h:z", limit=1, key_id=9, priority=0, timeout=0.1, max_hold_sec=10)
+    clock["t"] = 520.0
+    snaps = gate.all_snapshots()
+    assert len(snaps) == 1
+    assert snaps[0].holder_key_ids == (9,)
+    gate.release("h:z", key_id=9)
+    assert gate.all_snapshots() == []
+
+
+def test_double_release_does_not_steal_other_holder():
+    gate = SourceAdmissionGate()
+    assert gate.acquire("h:d", limit=2, key_id=1, priority=0, timeout=0.1)
+    assert gate.acquire("h:d", limit=2, key_id=2, priority=0, timeout=0.1)
+    gate.release("h:d", key_id=1)
+    gate.release("h:d", key_id=1)  # stale / double
+    detail = gate.snapshot_detail("h:d")
+    assert detail is not None
+    assert detail.holder_key_ids == (2,)
+    assert detail.inflight == 1
+    gate.release("h:d", key_id=2)
+    assert gate.all_snapshots() == []

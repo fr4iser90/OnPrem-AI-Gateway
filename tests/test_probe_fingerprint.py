@@ -112,6 +112,31 @@ def test_tei_body_token():
     )
 
 
+def test_gufo_owned_by_beats_placeholder_slots():
+    # Gufo advertises llama-shaped /slots that must not drive admission.
+    assert (
+        fingerprint_engine(
+            kind="chat",
+            probes_ok=["/health", "/slots", "/v1/models"],
+            slots_total=3,
+            body_hints="owned_by:gufo id:Qwen3.8-Flash-Next",
+        )
+        == "gufo"
+    )
+
+
+def test_gufo_without_slots():
+    assert (
+        fingerprint_engine(
+            kind="chat",
+            probes_ok=["/health", "/v1/models"],
+            slots_total=None,
+            body_hints="owned_by:gufo id:chat",
+        )
+        == "gufo"
+    )
+
+
 def test_openai_api_fallback():
     assert (
         fingerprint_engine(kind="chat", probes_ok=["/v1/models"], slots_total=None)
