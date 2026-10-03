@@ -207,8 +207,10 @@ def create_app() -> FastAPI:
         ph = (settings.public_host or "").strip() or f"127.0.0.1:{api_port}"
         print(f"  example:    http://{ph}/v1/chat/completions  (+ X-Api-Key)", flush=True)
         from .catalog_auto_sync import start_catalog_auto_sync
+        from .data.fleet_status import start_fleet_status_worker
 
         start_catalog_auto_sync()
+        start_fleet_status_worker()
 
     static_dir = Path(__file__).parent / "web" / "static"
     static_dir.mkdir(parents=True, exist_ok=True)
@@ -359,7 +361,8 @@ def create_app() -> FastAPI:
         if not restricted:
             allow_union = None
 
-        # Live capacity probes (cached ~3s) so status/load_state reflect reachability.
+        # Capacity from load_cache only (fleet worker / admission keep it warm).
+        # Never block /v1/models on multi-second upstream timeouts.
         slot_sources: set[str] = {r.source_name for r in rows}
         from .data.models import CatalogModel
 
@@ -381,7 +384,7 @@ def create_app() -> FastAPI:
             )
             if cat is not None:
                 slot_sources.add(cat.source_name)
-        capacity = capacities_by_source(db, slot_sources, probe=True)
+        capacity = capacities_by_source(db, slot_sources, probe=False)
 
         payload = openai_models_payload(rows, capacity_by_source=capacity)
         hidden = hidden_catalog_ids(db)

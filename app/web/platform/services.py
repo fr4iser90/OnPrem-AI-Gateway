@@ -26,12 +26,13 @@ def services_page(
 ):
     from ...data.backends import catalog_route_models, hardware_labels, source_rows
     from ...data.capabilities import engine_choices
-    from ...data.probe import probe_all
+    from ...data.fleet_status import get_fleet_statuses, kick_refresh
     from ...data.source_capacity import format_slots_label
 
     settings = _settings(request)
     rows = source_rows(db, settings)
-    statuses = probe_all(db)
+    kick_refresh()
+    statuses = get_fleet_statuses(db)
     catalog_by_source = {src.name: catalog_route_models(db, src.name) for src, _ in rows}
     engine_by = {s.service: s.engine for s in statuses}
     dialect_blurbs = {
@@ -68,9 +69,16 @@ def services_status_json(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[WebUser, Depends(require_platform_admin)],
 ):
-    from ...data.probe import probe_all
+    from ...data.fleet_status import cache_age_sec, get_fleet_statuses, kick_refresh
 
-    return {"services": [s.to_dict() for s in probe_all(db)]}
+    kick_refresh()
+    statuses = get_fleet_statuses(db)
+    age = cache_age_sec()
+    return {
+        "services": [s.to_dict() for s in statuses],
+        "cached": True,
+        "age_sec": None if age is None else round(age, 1),
+    }
 
 
 @router.post("/services")
@@ -120,6 +128,9 @@ def services_create(
         detail=f"{src.name} kind={src.kind} style={src.api_style}",
     )
     db.commit()
+    from ...data.fleet_status import kick_refresh
+
+    kick_refresh()
     request.session["flash_ok"] = f"Source '{src.name}' added."
     return RedirectResponse("/services", status_code=303)
 
@@ -198,6 +209,9 @@ def services_update(
         ),
     )
     db.commit()
+    from ...data.fleet_status import kick_refresh
+
+    kick_refresh()
     request.session["flash_ok"] = f"Source '{src.name}' saved."
     return RedirectResponse("/services", status_code=303)
 
@@ -227,5 +241,8 @@ def services_delete(
         detail=name,
     )
     db.commit()
+    from ...data.fleet_status import kick_refresh
+
+    kick_refresh()
     request.session["flash_ok"] = f"Source '{name}' deleted."
     return RedirectResponse("/services", status_code=303)

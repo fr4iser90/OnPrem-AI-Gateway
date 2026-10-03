@@ -112,7 +112,10 @@ def can_access_team(user: WebUser, team_id: int | None) -> bool:
 
 
 def can_access_key(user: WebUser, api_key, *, teams_enabled: bool) -> bool:
-    """Keys: own keys always; team owners also see every key on that team."""
+    """Keys: own keys always; team owners also see every key on that team.
+
+    Platform admins may access any key (Ops → Users → manage that user's keys).
+    """
     if user.is_platform_admin:
         return True
     if api_key.owner_user_id == user.id:
@@ -122,9 +125,20 @@ def can_access_key(user: WebUser, api_key, *, teams_enabled: bool) -> bool:
     return False
 
 
-def scope_keys_query(q, user: WebUser, *, teams_enabled: bool):
-    if user.is_platform_admin:
-        return q
+def scope_keys_query(
+    q,
+    user: WebUser,
+    *,
+    teams_enabled: bool,
+    owner_user_id: int | None = None,
+):
+    """Scope key lists for the portal.
+
+    You (/keys, /me): always the caller's own keys (admins included) — never the
+    whole fleet. Ops managing another user passes owner_user_id (admin only).
+    """
+    if user.is_platform_admin and owner_user_id is not None:
+        return q.filter(ApiKey.owner_user_id == int(owner_user_id))
     if not teams_enabled:
         return q.filter(ApiKey.owner_user_id == user.id)
     owned = owned_team_ids(user)

@@ -9,7 +9,9 @@ from dataclasses import dataclass
 from .backends import BackendSource
 from .capabilities import engine_state_to_load_snapshot, probe_engine_state
 
-_CACHE_TTL_SEC = 3.0
+# Align with fleet-status background refresh (~10s) so UI/API cache-only
+# reads stay warm between ticks without re-probing on every page load.
+_CACHE_TTL_SEC = 15.0
 _PROBE_TIMEOUT = 1.5
 
 # Lower sort key = preferred for routing.

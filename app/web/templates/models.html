@@ -107,69 +107,6 @@
   </form>
 </details>
 
-<section class="panel" id="public-aliases" data-aliases-root
-         data-alias-meta='{{ alias_picker_meta|tojson }}'>
-  <h2>Public aliases</h2>
-  <p class="muted mt-0 text-sm">
-    Client name → one active model (chat / embed / extractor / stt / tts).
-    <strong>Preferred source</strong> = pin only among sources that host that model (same kind); leave — unless you need a fixed box.
-    Flags: <span class="badge ok">on</span> ·
-    <span class="badge">hide list</span> ·
-    <span class="badge">show target</span>.
-  </p>
-
-  <form id="alias-add-form" class="alias-add" action="/models/aliases/add" method="post">
-    <h3 class="section-label">Add alias</h3>
-    <div class="alias-card-grid">
-      <div class="field">
-        <label for="alias_id">Alias name</label>
-        <input class="mono" id="alias_id" type="text" name="alias_id" required
-               placeholder="qwen3.6" pattern="[a-z0-9][a-z0-9._-]{0,126}" autocomplete="off">
-      </div>
-      <div class="field">
-        <label for="target_model_id">Active model</label>
-        {% if catalog_model_ids %}
-        <select class="mono" id="target_model_id" name="target_model_id" required data-alias-add-target>
-          <option value="" disabled selected>Select…</option>
-          {% for mid in catalog_model_ids %}
-          <option value="{{ mid }}">{{ mid }}</option>
-          {% endfor %}
-        </select>
-        {% else %}
-        <input class="mono" id="target_model_id" type="text" name="target_model_id" required placeholder="model id" data-alias-add-target>
-        {% endif %}
-      </div>
-      <div class="field">
-        <label for="preferred_source">Preferred source <span class="muted">(hosts of Active)</span></label>
-        <select id="preferred_source" name="preferred_source" data-alias-add-source>
-          <option value="">—</option>
-        </select>
-      </div>
-    </div>
-    <p class="muted text-sm alias-add-defaults">
-      New aliases start as
-      <span class="badge ok">on</span>
-      <span class="badge">hide list</span>
-      <span class="badge">show target</span>
-      — change flags after add.
-    </p>
-    <div class="alias-add-flags">
-      <button class="primary" type="submit">Add alias</button>
-      <span class="muted text-sm" id="alias-add-status" hidden></span>
-    </div>
-  </form>
-
-  <div id="alias-list" class="alias-list">
-    {% for a in aliases %}
-      {% with a=a, cands=alias_candidates.get(a.id, []), catalog_model_ids=catalog_model_ids, source_names=alias_pref_sources.get(a.id, []), open=false %}
-        {% include "partials/_alias_card.html" %}
-      {% endwith %}
-    {% else %}
-    <p class="muted" id="alias-empty">No aliases yet.</p>
-    {% endfor %}
-  </div>
-</section>
-
 {% if groups %}
 <form method="post" action="/models/save">
   {% for kind, active_pairs, stale_pairs, kind_count in groups %}
@@ -268,6 +205,69 @@
   </div>
 </div>
 {% endif %}
+<section class="panel" id="public-aliases" data-aliases-root
+         data-alias-meta='{{ alias_picker_meta|tojson }}'>
+  <h2>Public aliases</h2>
+  <p class="muted mt-0 text-sm">
+    Client name → one active model (chat / embed / extractor / stt / tts).
+    <strong>Preferred source</strong> = pin only among sources that host that model (same kind); leave — unless you need a fixed box.
+    Flags: <span class="badge ok">on</span> ·
+    <span class="badge">hide list</span> ·
+    <span class="badge">show target</span>.
+  </p>
+
+  <form id="alias-add-form" class="alias-add" action="/models/aliases/add" method="post">
+    <h3 class="section-label">Add alias</h3>
+    <div class="alias-card-grid">
+      <div class="field">
+        <label for="alias_id">Alias name</label>
+        <input class="mono" id="alias_id" type="text" name="alias_id" required
+               placeholder="qwen3.6" pattern="[a-z0-9][a-z0-9._-]{0,126}" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="target_model_id">Active model</label>
+        {% if catalog_model_ids %}
+        <select class="mono" id="target_model_id" name="target_model_id" required data-alias-add-target>
+          <option value="" disabled selected>Select…</option>
+          {% for mid in catalog_model_ids %}
+          <option value="{{ mid }}">{{ mid }}</option>
+          {% endfor %}
+        </select>
+        {% else %}
+        <input class="mono" id="target_model_id" type="text" name="target_model_id" required placeholder="model id" data-alias-add-target>
+        {% endif %}
+      </div>
+      <div class="field">
+        <label for="preferred_source">Preferred source <span class="muted">(hosts of Active)</span></label>
+        <select id="preferred_source" name="preferred_source" data-alias-add-source>
+          <option value="">—</option>
+        </select>
+      </div>
+    </div>
+    <p class="muted text-sm alias-add-defaults">
+      New aliases start as
+      <span class="badge ok">on</span>
+      <span class="badge">hide list</span>
+      <span class="badge">show target</span>
+      — change flags after add.
+    </p>
+    <div class="alias-add-flags">
+      <button class="primary" type="submit">Add alias</button>
+      <span class="muted text-sm" id="alias-add-status" hidden></span>
+    </div>
+  </form>
+
+  <div id="alias-list" class="alias-list">
+    {% for a in aliases %}
+      {% with a=a, cands=alias_candidates.get(a.id, []), catalog_model_ids=catalog_model_ids, source_names=alias_pref_sources.get(a.id, []), open=false %}
+        {% include "partials/_alias_card.html" %}
+      {% endwith %}
+    {% else %}
+    <p class="muted" id="alias-empty">No aliases yet.</p>
+    {% endfor %}
+  </div>
+</section>
+
 <script>
 (function () {
   var input = document.getElementById('model-catalog-filter');

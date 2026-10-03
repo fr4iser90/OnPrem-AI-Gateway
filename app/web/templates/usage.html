@@ -47,104 +47,6 @@
   <p class="pulse-foot">Throughput · last {{ range_label }}{% if gpu_power_enabled %} · Wh is approximate (sidecar samples){% endif %}</p>
 </section>
 
-{% if ops_mode and live_slots %}
-<section class="panel" id="live-slots">
-  <div class="panel-head">
-    <div class="panel-head-text">
-      <h2>Live slots (gateway)</h2>
-      <p class="panel-sub">Who holds admission slots right now — only traffic through this gateway.</p>
-    </div>
-  </div>
-  <div class="table-wrap">
-    <table class="table-compact">
-      <thead>
-        <tr><th>Source</th><th>Load</th><th>Holding</th><th>Queued</th></tr>
-      </thead>
-      <tbody>
-      {% for row in live_slots %}
-        <tr>
-          <td><span class="mono">{{ row.source }}</span> <span class="muted text-xs">{{ row.address }}</span></td>
-          <td class="mono">{{ row.label }}</td>
-          <td>{% if row.holders %}{% for h in row.holders %}<span class="badge">{{ h }}</span> {% endfor %}{% else %}—{% endif %}</td>
-          <td>{% if row.queued %}{% for h in row.queued %}<span class="badge off">{{ h }}</span> {% endfor %}{% else %}—{% endif %}</td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</section>
-{% endif %}
-
-{% if gpu_power_enabled and (energy_by_owner or energy_by_key) %}
-{% if ops_mode and energy_by_owner %}
-<section class="panel" id="energy-by-owner">
-  <div class="panel-head">
-    <div class="panel-head-text">
-      <h2>Energy by owner · {{ range_label }}</h2>
-      <p class="panel-sub">Approximate Wh rolled up across each user’s keys.</p>
-    </div>
-  </div>
-  <div class="table-wrap">
-    <table class="table-compact">
-      <thead>
-        <tr><th>Owner</th><th>Keys</th><th>OK</th><th>avg W</th><th>Wh</th></tr>
-      </thead>
-      <tbody>
-      {% for r in energy_by_owner %}
-        <tr>
-          <td>
-            {% if r.owner_user_id %}
-            <a href="{{ base_path }}?owner_user_id={{ r.owner_user_id }}&amp;range={{ range_key }}">{{ r.owner_name }}</a>
-            {% else %}{{ r.owner_name }}{% endif %}
-          </td>
-          <td class="num">{{ r.key_count }}</td>
-          <td class="num">{{ r.ok_count }}</td>
-          <td class="num">{% if r.watts_avg %}{{ '%.0f'|format(r.watts_avg) }}{% else %}—{% endif %}</td>
-          <td class="num"><strong>{{ '%.3f'|format(r.watt_hours) }}</strong></td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</section>
-{% endif %}
-
-{% if energy_by_key %}
-<section class="panel" id="energy-by-key">
-  <div class="panel-head">
-    <div class="panel-head-text">
-      <h2>Energy by key · {{ range_label }}</h2>
-      <p class="panel-sub">{% if ops_mode %}One row per key (same label, different owners stay separate).{% else %}Your keys only.{% endif %}</p>
-    </div>
-  </div>
-  <div class="table-wrap">
-    <table class="table-compact">
-      <thead>
-        <tr>{% if ops_mode %}<th>Owner</th>{% endif %}<th>Key</th><th>OK</th><th>avg W</th><th>Wh</th></tr>
-      </thead>
-      <tbody>
-      {% for r in energy_by_key %}
-        <tr>
-          {% if ops_mode %}
-          <td>
-            {% if r.owner_user_id %}
-            <a href="/keys?owner_user_id={{ r.owner_user_id }}">{{ r.owner_name }}</a>
-            {% else %}{{ r.owner_name or '—' }}{% endif %}
-          </td>
-          {% endif %}
-          <td class="mono">{{ r.key_label }}</td>
-          <td class="num">{{ r.ok_count }}</td>
-          <td class="num">{% if r.watts_avg %}{{ '%.0f'|format(r.watts_avg) }}{% else %}—{% endif %}</td>
-          <td class="num"><strong>{{ '%.3f'|format(r.watt_hours) }}</strong></td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</section>
-{% endif %}
-{% endif %}
-
 {% include "_usage_filters.html" %}
 
 <div class="panel" id="usage-events">
@@ -213,6 +115,102 @@
     </tbody>
   </table>
 </div>
+
+{% if ops_mode and live_slots %}
+<section class="panel" id="live-slots">
+  <div class="panel-head">
+    <div class="panel-head-text">
+      <h2>Live slots (gateway)</h2>
+      <p class="panel-sub">Who holds admission slots right now — only traffic through this gateway.</p>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="table-compact">
+      <thead>
+        <tr><th>Source</th><th>Load</th><th>Holding</th><th>Queued</th></tr>
+      </thead>
+      <tbody>
+      {% for row in live_slots %}
+        <tr>
+          <td><span class="mono">{{ row.source }}</span> <span class="muted text-xs">{{ row.address }}</span></td>
+          <td class="mono">{{ row.label }}</td>
+          <td>{% if row.holders %}{% for h in row.holders %}<span class="badge">{{ h }}</span> {% endfor %}{% else %}—{% endif %}</td>
+          <td>{% if row.queued %}{% for h in row.queued %}<span class="badge off">{{ h }}</span> {% endfor %}{% else %}—{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+{% if gpu_power_enabled and ops_mode and (energy_by_owner or energy_by_key) %}
+{% if energy_by_owner %}
+<section class="panel" id="energy-by-owner">
+  <div class="panel-head">
+    <div class="panel-head-text">
+      <h2>Energy by owner · {{ range_label }}</h2>
+      <p class="panel-sub">Approximate Wh rolled up across each user’s keys.</p>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="table-compact">
+      <thead>
+        <tr><th>Owner</th><th>Keys</th><th>OK</th><th>avg W</th><th>Wh</th></tr>
+      </thead>
+      <tbody>
+      {% for r in energy_by_owner %}
+        <tr>
+          <td>
+            {% if r.owner_user_id %}
+            <a href="{{ base_path }}?owner_user_id={{ r.owner_user_id }}&amp;range={{ range_key }}">{{ r.owner_name }}</a>
+            {% else %}{{ r.owner_name }}{% endif %}
+          </td>
+          <td class="num">{{ r.key_count }}</td>
+          <td class="num">{{ r.ok_count }}</td>
+          <td class="num">{% if r.watts_avg %}{{ '%.0f'|format(r.watts_avg) }}{% else %}—{% endif %}</td>
+          <td class="num"><strong>{{ '%.3f'|format(r.watt_hours) }}</strong></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+{% if energy_by_key %}
+<section class="panel" id="energy-by-key">
+  <div class="panel-head">
+    <div class="panel-head-text">
+      <h2>Energy by key · {{ range_label }}</h2>
+      <p class="panel-sub">One row per key (same label, different owners stay separate).</p>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="table-compact">
+      <thead>
+        <tr><th>Owner</th><th>Key</th><th>OK</th><th>avg W</th><th>Wh</th></tr>
+      </thead>
+      <tbody>
+      {% for r in energy_by_key %}
+        <tr>
+          <td>
+            {% if r.owner_user_id %}
+            <a href="/keys?owner_user_id={{ r.owner_user_id }}">{{ r.owner_name }}</a>
+            {% else %}{{ r.owner_name or '—' }}{% endif %}
+          </td>
+          <td class="mono">{{ r.key_label }}</td>
+          <td class="num">{{ r.ok_count }}</td>
+          <td class="num">{% if r.watts_avg %}{{ '%.0f'|format(r.watts_avg) }}{% else %}—{% endif %}</td>
+          <td class="num"><strong>{{ '%.3f'|format(r.watt_hours) }}</strong></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+{% endif %}
 
 <section class="panel" id="usage-models">
   <div class="panel-head">

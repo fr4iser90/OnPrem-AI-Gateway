@@ -235,12 +235,14 @@
     <button class="primary btn-start" type="submit">Add</button>
   </form>
   <div class="muted hint-after">
-    <p class="mb-1"><strong>Dialects</strong> (client always uses OpenAI <span class="mono">/v1/…</span>):</p>
-    <ul class="list-plain">
-      {% for st in api_styles %}
-      <li><span class="mono">{{ st.id }}</span> — {{ st.summary }}</li>
-      {% endfor %}
-    </ul>
+    <details>
+      <summary class="muted">Dialects (client always uses OpenAI <span class="mono">/v1/…</span>)</summary>
+      <ul class="list-plain">
+        {% for st in api_styles %}
+        <li><span class="mono">{{ st.id }}</span> — {{ st.summary }}</li>
+        {% endfor %}
+      </ul>
+    </details>
   </div>
 </div>
 {% else %}

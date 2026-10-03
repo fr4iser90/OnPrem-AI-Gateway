@@ -3,7 +3,7 @@
 {% block content %}
 <header class="page-head page-head--compact">
   <div>
-    <h1>Users &amp; access</h1>
+    <h1>{% if teams_enabled %}Users{% else %}Users &amp; access{% endif %}</h1>
     <p class="page-meta">{{ user_counts.total }} users · {{ user_counts.active }} active{% if user_counts.must_change %} · {{ user_counts.must_change }} must reset password{% endif %}</p>
   </div>
   <div class="page-actions">
@@ -22,130 +22,12 @@
 <div class="banner-warn" role="status">SMTP is not configured — password-reset emails will not send until <a href="/smtp">SMTP</a> is ready.</div>
 {% endif %}
 
-{% if not teams_enabled and weight_status is defined and weight_status.ready and not pool_model_weights_enabled %}
-<div class="flash">
-  Enough 7d usage for <strong>optional</strong> budget weighting
-  ({{ weight_status.model_count }} models, baseline TG ~{{ weight_status.baseline_tg_tok_s }} tok/s).
-  Enable via <a href="/settings/limits#pool-weights">Settings → budget factors</a>, then
-  <a href="/models">Models → Apply suggested weights</a>.
-</div>
-{% endif %}
-
-{% if not teams_enabled %}
-<div class="users-admin-grid">
-  <section class="panel panel-invite">
-    <div class="panel-head">
-      <div class="panel-head-text">
-        <h2>Invite link</h2>
-        <p class="panel-sub">One-time signup links (7 days). Uses <a href="/settings/access">default access</a> when self-registration is off.
-          After signup the account appears in <strong>All users</strong> below — then use <strong>Create key</strong>.</p>
-      </div>
-    </div>
-    <form method="post" action="/users/invites" class="row row--wrap row--align-end">
-      <div class="field">
-        <label for="invite-email">Email (optional)</label>
-        <input id="invite-email" type="email" name="email" placeholder="Send link by email" autocomplete="off">
-      </div>
-      <div class="field">
-        <label for="invite-note">Note</label>
-        <input id="invite-note" type="text" name="note" placeholder="e.g. Anna" autocomplete="off">
-      </div>
-      <button class="primary" type="submit">Create link</button>
-    </form>
-    {% if pending_invites %}
-    <div class="table-wrap users-invite-table">
-      <table class="table-compact">
-        <thead><tr><th>Created</th><th>Expires</th><th>By</th><th>Note</th><th>Status</th><th></th></tr></thead>
-        <tbody>
-        {% for inv in pending_invites %}
-          <tr>
-            <td class="mono">{{ inv.created_at.strftime('%Y-%m-%d %H:%M') }} UTC</td>
-            <td class="mono">{{ inv.expires_at.strftime('%Y-%m-%d') }}</td>
-            <td>{{ invite_creators.get(inv.created_by_id, '—') }}</td>
-            <td>{{ inv.note or '—' }}</td>
-            <td class="muted text-sm">Awaiting signup</td>
-            <td>
-              <form method="post" action="/users/invites/{{ inv.id }}/revoke">
-                <button class="btn-sm" type="submit">Revoke</button>
-              </form>
-            </td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% endif %}
-  </section>
-
-  <section class="panel panel-create-user">
-    <div class="panel-head">
-      <div class="panel-head-text">
-        <h2>Create user</h2>
-        <p class="panel-sub">Email + initial password required. Username optional (email is the login).
-          Use <strong>Create key</strong> in the table below right after adding the user.</p>
-      </div>
-    </div>
-    <form method="post" action="/users/new" class="users-create-form">
-      <div class="row">
-        <div class="field">
-          <label for="new-email">Email</label>
-          <input id="new-email" type="email" name="email" required placeholder="Login + password reset" autocomplete="off">
-        </div>
-        <div class="field">
-          <label for="new-username">Username <span class="muted label-normal">(optional)</span></label>
-          <input id="new-username" type="text" name="username" autocomplete="off" placeholder="Leave empty → they choose">
-        </div>
-        <div class="field">
-          <label for="new-password">Initial password</label>
-          <input id="new-password" type="password" name="password" required minlength="8" autocomplete="new-password">
-        </div>
-      </div>
-      <div class="checkboxes checkboxes-block">
-        <label><input type="checkbox" name="is_platform_admin" id="new-is-admin"> Platform admin (full access)</label>
-        <label><input type="checkbox" name="must_change_password" checked> Must change password on first login</label>
-        <label>
-          <input type="checkbox" name="send_welcome_email" id="new-send-welcome" {% if smtp_ok %}checked{% else %}disabled{% endif %}>
-          Send welcome email{% if not smtp_ok %} <span class="muted">(configure <a href="/smtp">SMTP</a> first)</span>{% endif %}
-        </label>
-      </div>
-      <div class="field field-gap" id="new-welcome-note-wrap">
-        <label for="new-welcome-note">Personal note for welcome email <span class="muted label-normal">(optional)</span></label>
-        <textarea id="new-welcome-note" name="welcome_note" rows="3" maxlength="2000"
-                  placeholder="e.g. Hey Kerstin — here is access for TTS Thomas + the chat models we discussed."
-                  {% if not smtp_ok %}disabled{% endif %}></textarea>
-        <p class="hint-below">Appended to the standard welcome mail. No API key in email — they create one under API Keys after login (or you send a key separately).</p>
-      </div>
-      <p class="muted hint-below">If username is empty, email is the login. First login still requires a new password when “Must change password” is on. Welcome mail includes login, temp password, API base URL, and access summary — not the API key.</p>
-      <div class="field field-gap-lg" id="new-user-grants">
-        <label>Sources for this user</label>
-        {% with source_chips=source_chips, selected_services=selected_services, hint_below='Uncheck sources this person should not use.' %}
-        {% include "_source_chips.html" %}
-        {% endwith %}
-      </div>
-      {% if catalog_groups %}
-      <details class="details-edit field-gap-lg">
-        <summary class="btn-sm">Optional · restrict models</summary>
-        <div class="details-edit-body">
-          {% with catalog_groups=catalog_groups, selected=selected_models, input_name='models', picker_id='new-user-models', hint='Nothing checked = all ON models for the sources above.' %}
-          {% include "partials/model_picker.html" %}
-          {% endwith %}
-        </div>
-      </details>
-      {% endif %}
-      <div class="actions actions-mt">
-        <input class="primary" type="submit" value="Add user">
-      </div>
-    </form>
-  </section>
-</div>
-{% endif %}
-
 <section class="panel panel-users-list">
   <div class="panel-head row-between">
     <div class="panel-head-text">
       <h2>All users</h2>
       {% if not teams_enabled %}
-      <p class="panel-sub">Click a source badge for models. <strong>+</strong> add source · <strong>×</strong> remove · limits line opens RPM and quotas.</p>
+      <p class="panel-sub">Click a source badge for models. <strong>+</strong> add source · limits line opens RPM and quotas. Keys open on the keys page for that user.</p>
       {% else %}
       <p class="panel-sub">Account status and admin role. Team membership is managed on Teams.</p>
       {% endif %}
@@ -215,44 +97,18 @@
               {% if not teams_enabled %}
                 {% set nkeys = active_key_counts.get(u.id, 0) %}
                 {% if nkeys %}
-                <a class="badge badge-link" href="/keys?owner_user_id={{ u.id }}" title="View API keys">{{ nkeys }} key{% if nkeys != 1 %}s{% endif %}</a>
+                <a class="btn-sm" href="/keys?owner_user_id={{ u.id }}" title="Open this user’s keys">{{ nkeys }} key{% if nkeys != 1 %}s{% endif %}</a>
                 {% else %}
                 <span class="muted text-sm user-key-count">0 keys</span>
                 {% endif %}
-              {% endif %}
-              {% if not teams_enabled and u.is_active %}
-                {% set key_block = key_create_blocked.get(u.id) %}
-                {% if key_block %}
-                <button class="btn-sm" type="button" disabled title="{{ key_block }}">Create key</button>
-                {% else %}
-                <a class="btn-sm" href="/keys/new?owner_user_id={{ u.id }}">Create key</a>
+                {% if u.is_active %}
+                  {% set key_block = key_create_blocked.get(u.id) %}
+                  {% if key_block %}
+                  <button class="btn-sm" type="button" disabled title="{{ key_block }}">Create key</button>
+                  {% else %}
+                  <a class="btn-sm" href="/keys/new?owner_user_id={{ u.id }}">Create key</a>
+                  {% endif %}
                 {% endif %}
-              {% endif %}
-              {% if not teams_enabled and user_keys.get(u.id) %}
-              <details class="details-edit user-keys-details">
-                <summary class="btn-sm">Keys</summary>
-                <ul class="user-keys-list">
-                {% for k in user_keys[u.id] %}
-                  <li class="user-keys-item">
-                    <span class="mono">{{ k.key_prefix }}</span>
-                    <span class="muted">{{ k.label }}</span>
-                    {% if k.is_active %}<span class="badge ok">active</span>{% else %}<span class="badge off">revoked</span>{% endif %}
-                    <span class="user-keys-actions">
-                      <a class="btn-sm" href="/keys?edit={{ k.id }}">Edit</a>
-                      <form method="post" action="/keys/{{ k.id }}/rotate" class="inline-form">
-                        <button class="btn-sm" type="submit">Rotate</button>
-                      </form>
-                      {% if k.is_active %}
-                      <form method="post" action="/keys/{{ k.id }}/revoke" class="inline-form"
-                            onsubmit="return confirm('Revoke {{ k.label }}?');">
-                        <button class="btn-sm btn-danger" type="submit">Revoke</button>
-                      </form>
-                      {% endif %}
-                    </span>
-                  </li>
-                {% endfor %}
-                </ul>
-              </details>
               {% endif %}
               {% if u.id != user.id %}
               <form method="post" action="/users/{{ u.id }}/toggle">
@@ -293,7 +149,7 @@
         <tr><td colspan="{{ 4 if not teams_enabled else 3 }}" class="empty-cell">
           <div class="empty-state">
             <p class="empty-state-title">No users yet</p>
-            <p class="empty-state-text">Create a user above and grant sources they may use.</p>
+            <p class="empty-state-text">Use <strong>Add people</strong> below to invite or create an account.</p>
           </div>
         </td></tr>
       {% endfor %}
@@ -301,6 +157,106 @@
     </table>
   </div>
 </section>
+
+{% if not teams_enabled %}
+<details class="panel panel-details" {% if not users %}open{% endif %}>
+  <summary><strong>Add people</strong> — invite link or create account</summary>
+  <div class="users-admin-grid field-gap-md">
+    <section class="panel-invite">
+      <h3 class="section-label">Invite link</h3>
+      <p class="panel-sub mt-0">One-time signup links (7 days). Uses <a href="/settings/access">default access</a> when self-registration is off.</p>
+      <form method="post" action="/users/invites" class="row">
+        <div class="field">
+          <label for="invite-email">Email (optional)</label>
+          <input id="invite-email" type="email" name="email" placeholder="Send link by email" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="invite-note">Note</label>
+          <input id="invite-note" type="text" name="note" placeholder="e.g. Anna" autocomplete="off">
+        </div>
+        <button class="primary" type="submit">Create link</button>
+      </form>
+      {% if pending_invites %}
+      <div class="table-wrap users-invite-table field-gap-sm">
+        <table class="table-compact">
+          <thead><tr><th>Created</th><th>Expires</th><th>By</th><th>Note</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+          {% for inv in pending_invites %}
+            <tr>
+              <td class="mono">{{ inv.created_at.strftime('%Y-%m-%d %H:%M') }} UTC</td>
+              <td class="mono">{{ inv.expires_at.strftime('%Y-%m-%d') }}</td>
+              <td>{{ invite_creators.get(inv.created_by_id, '—') }}</td>
+              <td>{{ inv.note or '—' }}</td>
+              <td class="muted text-sm">Awaiting signup</td>
+              <td>
+                <form method="post" action="/users/invites/{{ inv.id }}/revoke">
+                  <button class="btn-sm" type="submit">Revoke</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+    </section>
+
+    <section class="panel-create-user">
+      <h3 class="section-label">Create user</h3>
+      <p class="panel-sub mt-0">Email + initial password. Then grant sources on the row above and <strong>Create key</strong>.</p>
+      <form method="post" action="/users/new" class="users-create-form">
+        <div class="row">
+          <div class="field">
+            <label for="new-email">Email</label>
+            <input id="new-email" type="email" name="email" required placeholder="Login + password reset" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="new-username">Username <span class="muted label-normal">(optional)</span></label>
+            <input id="new-username" type="text" name="username" autocomplete="off" placeholder="Leave empty → they choose">
+          </div>
+          <div class="field">
+            <label for="new-password">Initial password</label>
+            <input id="new-password" type="password" name="password" required minlength="8" autocomplete="new-password">
+          </div>
+        </div>
+        <div class="checkboxes checkboxes-block">
+          <label><input type="checkbox" name="is_platform_admin" id="new-is-admin"> Platform admin (full access)</label>
+          <label><input type="checkbox" name="must_change_password" checked> Must change password on first login</label>
+          <label>
+            <input type="checkbox" name="send_welcome_email" id="new-send-welcome" {% if smtp_ok %}checked{% else %}disabled{% endif %}>
+            Send welcome email{% if not smtp_ok %} <span class="muted">(configure <a href="/smtp">SMTP</a> first)</span>{% endif %}
+          </label>
+        </div>
+        <div class="field field-gap" id="new-welcome-note-wrap">
+          <label for="new-welcome-note">Welcome note <span class="muted label-normal">(optional)</span></label>
+          <textarea id="new-welcome-note" name="welcome_note" rows="2" maxlength="2000"
+                    placeholder="Optional note appended to the welcome mail"
+                    {% if not smtp_ok %}disabled{% endif %}></textarea>
+        </div>
+        <div class="field field-gap-lg" id="new-user-grants">
+          <label>Sources for this user</label>
+          {% with source_chips=source_chips, selected_services=selected_services, hint_below='Uncheck sources this person should not use. You can change grants later on the user row.' %}
+          {% include "_source_chips.html" %}
+          {% endwith %}
+        </div>
+        {% if catalog_groups %}
+        <details class="details-edit field-gap-lg">
+          <summary class="btn-sm">Optional · restrict models</summary>
+          <div class="details-edit-body">
+            {% with catalog_groups=catalog_groups, selected=selected_models, input_name='models', picker_id='new-user-models', hint='Nothing checked = all ON models for the sources above.' %}
+            {% include "partials/model_picker.html" %}
+            {% endwith %}
+          </div>
+        </details>
+        {% endif %}
+        <div class="actions actions-mt">
+          <input class="primary" type="submit" value="Add user">
+        </div>
+      </form>
+    </section>
+  </div>
+</details>
+{% endif %}
 
 <script>
 (function () {

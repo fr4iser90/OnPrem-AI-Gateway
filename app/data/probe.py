@@ -14,8 +14,13 @@ from ..config import MODEL_CHECK_KINDS
 from .backends import list_sources
 from .models import BackendSource
 
-_TIMEOUT = 2.0
+# Short connect + modest read — dead/saturated hosts must not burn N×2s per path.
+_TIMEOUT = httpx.Timeout(connect=0.4, read=1.0, write=1.0, pool=0.5)
 _loading_since: dict[str, float] = {}
+
+
+class _HostDead(Exception):
+    """Transport timeout / connect fail — stop probing this host."""
 
 
 @dataclass
@@ -47,6 +52,14 @@ def _base_url(backend: str) -> str:
 def _get(client: httpx.Client, url: str) -> httpx.Response | None:
     try:
         return client.get(url)
+    except (
+        httpx.ConnectError,
+        httpx.ConnectTimeout,
+        httpx.ReadTimeout,
+        httpx.WriteTimeout,
+        httpx.PoolTimeout,
+    ):
+        raise _HostDead() from None
     except Exception:
         return None
 
@@ -183,6 +196,7 @@ def probe_source(src: BackendSource) -> ServiceStatus:
     header_hints = ""
     body_hints = ""
 
+    host_dead = False
     try:
         with httpx.Client(timeout=_TIMEOUT, follow_redirects=True) as client:
             health_paths = ["/health", "/v1/health"]
@@ -195,165 +209,184 @@ def probe_source(src: BackendSource) -> ServiceStatus:
                 # TEI: probe /info first (strong fingerprint); then /health
                 health_paths = ["/info", "/health", "/v1/health"]
 
-            for path in health_paths:
-                resp = _get(client, base + path)
-                if resp is None:
-                    continue
-                header_hints += " " + _headers_hint(resp)
-                # /info is TEI-only. Never treat a 404/HTML /info as generic health —
-                # that used to mark state=unknown and fingerprint as tei.
-                if path == "/info":
-                    if resp.status_code == 200:
-                        try:
-                            info = resp.json()
-                            if isinstance(info, dict) and (
-                                info.get("model_id")
-                                or info.get("model_sha")
-                                or "model_id" in info
-                            ):
-                                body_hints += " " + _models_hint(info)
-                                mid = info.get("model_id") or info.get("model_sha")
-                                if mid and not status.models:
-                                    status.models = [str(mid)]
-                                status.probes_ok.append("/info")
-                                status.state = "ok"
-                                status.detail = "tei /info"
-                                body_hints += " text-embeddings-inference"
-                                break
-                        except Exception:
-                            pass
-                    continue
-                parsed = _health_state(resp)
-                if parsed is None:
-                    continue
-                state, detail = parsed
-                status.state = state
-                status.detail = detail
-                status.probes_ok.append(path)
-                if state != "down":
-                    break
-
-            if status.state == "down":
-                resp = _get(client, base + "/")
-                if resp is not None:
+            try:
+                for path in health_paths:
+                    resp = _get(client, base + path)
+                    if resp is None:
+                        continue
                     header_hints += " " + _headers_hint(resp)
-                    status.state = "unknown"
-                    status.detail = f"reachable (HTTP {resp.status_code})"
-                    status.probes_ok.append("/")
+                    # /info is TEI-only. Never treat a 404/HTML /info as generic health —
+                    # that used to mark state=unknown and fingerprint as tei.
+                    if path == "/info":
+                        if resp.status_code == 200:
+                            try:
+                                info = resp.json()
+                                if isinstance(info, dict) and (
+                                    info.get("model_id")
+                                    or info.get("model_sha")
+                                    or "model_id" in info
+                                ):
+                                    body_hints += " " + _models_hint(info)
+                                    mid = info.get("model_id") or info.get("model_sha")
+                                    if mid and not status.models:
+                                        status.models = [str(mid)]
+                                    status.probes_ok.append("/info")
+                                    status.state = "ok"
+                                    status.detail = "tei /info"
+                                    body_hints += " text-embeddings-inference"
+                                    break
+                            except Exception:
+                                pass
+                        continue
+                    parsed = _health_state(resp)
+                    if parsed is None:
+                        continue
+                    state, detail = parsed
+                    status.state = state
+                    status.detail = detail
+                    status.probes_ok.append(path)
+                    if state != "down":
+                        break
 
-            if kind in ("chat", "embed", "extractor") and status.state != "down":
-                resp = _get(client, base + "/slots")
-                if resp is not None and resp.status_code == 200:
-                    header_hints += " " + _headers_hint(resp)
-                    try:
-                        data = resp.json()
-                    except Exception:
-                        data = None
-                    parsed_slots = _parse_slots(data)
-                    if parsed_slots:
-                        total, busy, idle = parsed_slots
-                        status.slots_total = total
-                        status.slots_busy = busy
-                        status.slots_idle = idle
-                        status.probes_ok.append("/slots")
-                        if busy and status.state == "ok":
-                            status.state = "busy"
-                            from .source_capacity import format_slots_label
-
-                            status.detail = format_slots_label(busy, total)
-                        elif status.state == "ok":
-                            status.detail = f"{total} slots, all idle"
-
-                # llama.cpp server (incl. router mode) exposes /props
-                props = _get(client, base + "/props")
-                if props is not None and props.status_code == 200:
-                    header_hints += " " + _headers_hint(props)
-                    try:
-                        pdata = props.json()
-                        if isinstance(pdata, dict):
-                            body_hints += " " + _models_hint(pdata)
-                            role = str(pdata.get("role") or "").lower()
-                            if role:
-                                body_hints += f" role:{role}"
-                            if pdata.get("build_info") or pdata.get("model_alias") or role:
-                                status.probes_ok.append("/props")
-                                body_hints += " llama.cpp"
-                                if role == "router" and status.state == "ok" and "/slots" not in status.probes_ok:
-                                    status.detail = "llama-router /props"
-                    except Exception:
-                        pass
-
-            if kind == "chat" and status.state != "down" and not status.models:
-                resp = _get(client, base + "/api/ps")
-                if resp is not None and resp.status_code == 200:
-                    header_hints += " " + _headers_hint(resp)
-                    try:
-                        data = resp.json()
-                        models = []
-                        for m in data.get("models") or []:
-                            name = m.get("name") or m.get("model")
-                            if name:
-                                models.append(str(name))
-                        status.models = models
-                        status.probes_ok.append("/api/ps")
-                        if models:
-                            status.detail = f"{len(models)} model(s) loaded"
-                    except Exception:
-                        pass
-                if not status.models:
-                    tags = _get(client, base + "/api/tags")
-                    if tags is not None and tags.status_code == 200:
-                        header_hints += " " + _headers_hint(tags)
-                        try:
-                            data = tags.json()
-                            status.models = [
-                                str(m.get("name"))
-                                for m in (data.get("models") or [])
-                                if m.get("name")
-                            ][:12]
-                            status.probes_ok.append("/api/tags")
-                        except Exception:
-                            pass
-
-            # OpenAI /v1/models — also used for vLLM / local inference stacks / LM Studio hints
-            if kind in MODEL_CHECK_KINDS and status.state not in (
-                "down",
-                "unset",
-            ):
-                if "/v1/models" not in status.probes_ok:
-                    resp = _get(client, base + "/v1/models")
-                    if resp is not None and resp.status_code == 200:
+                if status.state == "down":
+                    resp = _get(client, base + "/")
+                    if resp is not None:
                         header_hints += " " + _headers_hint(resp)
-                        try:
-                            data = resp.json()
-                            body_hints += " " + _models_hint(data)
-                            ids = [
-                                str(m.get("id"))
-                                for m in (data.get("data") or [])
-                                if isinstance(m, dict) and m.get("id")
-                            ]
-                            if ids and not status.models:
-                                status.models = ids[:12]
-                            status.probes_ok.append("/v1/models")
-                            # Reachable OpenAI catalog beats a prior non-200 /health
-                            if status.state == "unknown":
-                                status.state = "ok"
-                                status.detail = "ok"
-                        except Exception:
-                            pass
+                        status.state = "unknown"
+                        status.detail = f"reachable (HTTP {resp.status_code})"
+                        status.probes_ok.append("/")
+            except _HostDead:
+                host_dead = True
+                status.state = "down"
+                status.detail = "unreachable"
 
-            # vLLM often exposes /version
-            if kind in ("chat", "embed", "extractor") and status.state not in ("down", "unset"):
-                ver = _get(client, base + "/version")
-                if ver is not None and ver.status_code == 200:
-                    header_hints += " " + _headers_hint(ver)
-                    try:
-                        text = ver.text.lower()
-                        body_hints += " " + text[:200]
-                        if "vllm" in text:
-                            status.probes_ok.append("/version")
-                    except Exception:
-                        pass
+            if not host_dead and status.state != "down":
+                try:
+                    if kind in ("chat", "embed", "extractor"):
+                        resp = _get(client, base + "/slots")
+                        if resp is not None and resp.status_code == 200:
+                            header_hints += " " + _headers_hint(resp)
+                            try:
+                                data = resp.json()
+                            except Exception:
+                                data = None
+                            parsed_slots = _parse_slots(data)
+                            if parsed_slots:
+                                total, busy, idle = parsed_slots
+                                status.slots_total = total
+                                status.slots_busy = busy
+                                status.slots_idle = idle
+                                status.probes_ok.append("/slots")
+                                if busy and status.state == "ok":
+                                    status.state = "busy"
+                                    from .source_capacity import format_slots_label
+
+                                    status.detail = format_slots_label(busy, total)
+                                elif status.state == "ok":
+                                    status.detail = f"{total} slots, all idle"
+
+                        # llama.cpp server (incl. router mode) exposes /props
+                        props = _get(client, base + "/props")
+                        if props is not None and props.status_code == 200:
+                            header_hints += " " + _headers_hint(props)
+                            try:
+                                pdata = props.json()
+                                if isinstance(pdata, dict):
+                                    body_hints += " " + _models_hint(pdata)
+                                    role = str(pdata.get("role") or "").lower()
+                                    if role:
+                                        body_hints += f" role:{role}"
+                                    if (
+                                        pdata.get("build_info")
+                                        or pdata.get("model_alias")
+                                        or role
+                                    ):
+                                        status.probes_ok.append("/props")
+                                        body_hints += " llama.cpp"
+                                        if (
+                                            role == "router"
+                                            and status.state == "ok"
+                                            and "/slots" not in status.probes_ok
+                                        ):
+                                            status.detail = "llama-router /props"
+                            except Exception:
+                                pass
+
+                    if kind == "chat" and not status.models:
+                        resp = _get(client, base + "/api/ps")
+                        if resp is not None and resp.status_code == 200:
+                            header_hints += " " + _headers_hint(resp)
+                            try:
+                                data = resp.json()
+                                models = []
+                                for m in data.get("models") or []:
+                                    name = m.get("name") or m.get("model")
+                                    if name:
+                                        models.append(str(name))
+                                status.models = models
+                                status.probes_ok.append("/api/ps")
+                                if models:
+                                    status.detail = f"{len(models)} model(s) loaded"
+                            except Exception:
+                                pass
+                        if not status.models:
+                            tags = _get(client, base + "/api/tags")
+                            if tags is not None and tags.status_code == 200:
+                                header_hints += " " + _headers_hint(tags)
+                                try:
+                                    data = tags.json()
+                                    status.models = [
+                                        str(m.get("name"))
+                                        for m in (data.get("models") or [])
+                                        if m.get("name")
+                                    ][:12]
+                                    status.probes_ok.append("/api/tags")
+                                except Exception:
+                                    pass
+
+                    # OpenAI /v1/models — also used for vLLM / local stacks / LM Studio
+                    if kind in MODEL_CHECK_KINDS and status.state not in (
+                        "down",
+                        "unset",
+                    ):
+                        if "/v1/models" not in status.probes_ok:
+                            resp = _get(client, base + "/v1/models")
+                            if resp is not None and resp.status_code == 200:
+                                header_hints += " " + _headers_hint(resp)
+                                try:
+                                    data = resp.json()
+                                    body_hints += " " + _models_hint(data)
+                                    ids = [
+                                        str(m.get("id"))
+                                        for m in (data.get("data") or [])
+                                        if isinstance(m, dict) and m.get("id")
+                                    ]
+                                    if ids and not status.models:
+                                        status.models = ids[:12]
+                                    status.probes_ok.append("/v1/models")
+                                    if status.state == "unknown":
+                                        status.state = "ok"
+                                        status.detail = "ok"
+                                except Exception:
+                                    pass
+
+                    if kind in ("chat", "embed", "extractor") and status.state not in (
+                        "down",
+                        "unset",
+                    ):
+                        ver = _get(client, base + "/version")
+                        if ver is not None and ver.status_code == 200:
+                            header_hints += " " + _headers_hint(ver)
+                            try:
+                                text = ver.text.lower()
+                                body_hints += " " + text[:200]
+                                if "vllm" in text:
+                                    status.probes_ok.append("/version")
+                            except Exception:
+                                pass
+                except _HostDead:
+                    # Keep health result; skip remaining enrichment.
+                    pass
 
             if status.state == "loading":
                 _loading_since.setdefault(key, time.time())
@@ -368,17 +401,28 @@ def probe_source(src: BackendSource) -> ServiceStatus:
                 body_hints=body_hints,
             )
 
+    except _HostDead:
+        status.state = "down"
+        status.detail = "unreachable"
+        host_dead = True
     except Exception as exc:  # noqa: BLE001
         status.state = "down"
         status.detail = str(exc)[:120]
+        host_dead = True
 
     from ..usage_pool import check_probe, probe_url_for_source
 
     probe = probe_url_for_source(src)
     status.gpu_power_url = probe
-    st, watts, _ = check_probe(probe)
-    status.gpu_power = st
-    status.gpu_watts = watts
+    # Sidecar is a different port; skip when the API host already timed out
+    # so saturated links don't add another round-trip to every probe.
+    if host_dead or status.state == "down":
+        status.gpu_power = "unreachable" if probe else "off"
+        status.gpu_watts = None
+    else:
+        st, watts, _ = check_probe(probe)
+        status.gpu_power = st
+        status.gpu_watts = watts
 
     return status
 

@@ -6,8 +6,9 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
+from ..data.fleet_status import get_fleet_statuses
 from ..data.models import WebUser
-from ..data.probe import ServiceStatus, probe_all
+from ..data.probe import ServiceStatus
 from ..mailer import get_smtp, smtp_ready
 from .accounts import get_auth_settings
 from .invites import pending_invites
@@ -24,7 +25,8 @@ class AttentionItem:
 
 
 def fleet_statuses(db: Session) -> list[ServiceStatus]:
-    return probe_all(db)
+    """Cache-only — never blocks the dashboard on upstream timeouts."""
+    return get_fleet_statuses(db)
 
 
 def fleet_summary(statuses: list[ServiceStatus]) -> dict[str, int]:

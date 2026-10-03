@@ -3,37 +3,27 @@
 {% block content %}
 <header class="page-head page-head--compact">
   <div>
-    <h1>API Keys</h1>
+    <h1>{% if managing_other %}Keys · {{ filter_owner|display_name }}{% else %}API Keys{% endif %}</h1>
     <p class="page-meta">
       {{ keys|length }} keys · {{ active_count }} active
-      {% if filter_owner %}
-      · filtered: {{ filter_owner|display_name }}
+      {% if managing_other %}
+      · managing another user
       {% endif %}
     </p>
   </div>
   <div class="page-actions">
-    {% if is_admin and owners is defined and owners and not teams_enabled %}
-    <form method="get" action="/keys" class="keys-owner-filter row row--align-end">
-      <div class="field field-compact">
-        <label for="keys-owner-filter" class="sr-only">Filter by owner</label>
-        <select id="keys-owner-filter" name="owner_user_id" onchange="this.form.submit()">
-          <option value="">All owners</option>
-          {% for u in owners %}
-          <option value="{{ u.id }}" {% if filter_owner_user_id == u.id %}selected{% endif %}>{{ u|display_name }}</option>
-          {% endfor %}
-        </select>
-      </div>
-    </form>
+    {% if managing_other %}
+    <a class="btn btn-sm" href="/users">Back to Users</a>
     {% endif %}
     <a class="btn primary" href="/keys/new{% if filter_owner_user_id %}?owner_user_id={{ filter_owner_user_id }}{% endif %}">New key</a>
   </div>
 </header>
 
-{% if filter_owner %}
+{% if managing_other and filter_owner %}
 <div class="banner-info keys-filter-banner">
   Showing keys for <strong>{{ filter_owner|display_name }}</strong>
   ({{ active_count }} active).
-  <a href="/keys">Clear filter</a>
+  <a href="/keys">My keys</a>
   · <a href="/keys/new?owner_user_id={{ filter_owner.id }}">New key for this user</a>
 </div>
 {% endif %}
@@ -62,7 +52,7 @@
       <tr>
         <th>Label</th>
         <th>Prefix</th>
-        {% if is_admin and not teams_enabled %}<th>Owner</th>{% endif %}
+        {% if managing_other %}<th>Owner</th>{% endif %}
         {% if teams_enabled %}<th>Team</th>{% endif %}
         <th>Services</th>
         <th>Last used</th>
@@ -79,11 +69,9 @@
       <tr id="key-row-{{ k.id }}">
         <td>{{ k.label }}</td>
         <td class="mono">{{ k.key_prefix }}</td>
-        {% if is_admin and not teams_enabled %}
+        {% if managing_other %}
         <td>
-          {% if k.owner %}
-          <a href="/keys?owner_user_id={{ k.owner_user_id }}">{{ k.owner|display_name }}</a>
-          {% else %}<span class="muted">—</span>{% endif %}
+          {% if k.owner %}{{ k.owner|display_name }}{% else %}<span class="muted">—</span>{% endif %}
         </td>
         {% endif %}
         {% if teams_enabled %}<td>{{ k.team.name if k.team else '—' }}</td>{% endif %}
@@ -121,7 +109,7 @@
         </td>
       </tr>
     {% else %}
-      <tr><td colspan="{{ 9 + (1 if teams_enabled else 0) + (1 if is_admin and not teams_enabled else 0) + (1 if gpu_power_enabled else 0) }}">
+      <tr><td colspan="{{ 9 + (1 if teams_enabled else 0) + (1 if managing_other else 0) + (1 if gpu_power_enabled else 0) }}">
         <div class="empty-state">
           <p class="empty-state-title">No API keys yet</p>
           <p class="empty-state-text">Create a key for OpenAI-compatible clients (VS Code, curl, apps).</p>

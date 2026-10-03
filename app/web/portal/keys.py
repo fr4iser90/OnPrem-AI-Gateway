@@ -94,8 +94,8 @@ def keys_list(
         joinedload(ApiKey.service_grants),
         joinedload(ApiKey.owner),
     )
-    q = scope_keys_query(q, user, teams_enabled=teams_on)
     filter_owner: WebUser | None = None
+    scoped_owner_id: int | None = None
     if owner_user_id is not None:
         if not user.is_platform_admin and owner_user_id != user.id:
             raise Forbidden()
@@ -103,19 +103,13 @@ def keys_list(
         if filter_owner is None:
             request.session["flash_err"] = "User not found."
             return RedirectResponse("/keys", status_code=303)
-        q = q.filter(ApiKey.owner_user_id == owner_user_id)
+        # Admin Ops path: manage another user's keys (linked from Users).
+        if user.is_platform_admin:
+            scoped_owner_id = owner_user_id
+    q = scope_keys_query(
+        q, user, teams_enabled=teams_on, owner_user_id=scoped_owner_id
+    )
     keys = q.order_by(ApiKey.created_at.desc()).all()
-    # All-owners admin view: group by owner so identical labels (e.g. main) stay distinct.
-    if user.is_platform_admin and owner_user_id is None and not teams_on:
-        from ..accounts import user_display_name
-
-        keys.sort(
-            key=lambda k: (
-                (user_display_name(k.owner) if k.owner else "").lower(),
-                (k.label or "").lower(),
-                -(k.created_at.timestamp() if k.created_at else 0),
-            )
-        )
     key_ids = [k.id for k in keys]
     day_ago = utcnow() - timedelta(days=1)
     usage_24h: dict[int, int] = {}
@@ -155,7 +149,12 @@ def keys_list(
             "teams": teams,
             "owners": owners,
             "filter_owner": filter_owner,
-            "filter_owner_user_id": owner_user_id,
+            "filter_owner_user_id": scoped_owner_id,
+            "managing_other": bool(
+                user.is_platform_admin
+                and scoped_owner_id is not None
+                and scoped_owner_id != user.id
+            ),
             "flash_key": request.session.pop("flash_key", None),
             "flash_key_services": request.session.pop("flash_key_services", None),
             "flash_ok": request.session.pop("flash_ok", None),

@@ -69,8 +69,8 @@ def models_page(
 
     flash_ok = request.session.pop("flash_ok", None)
     flash_err = request.session.pop("flash_err", None)
-    # Loaded badges: last Sync, overridden to unavailable when live capacity state is down.
-    # Slot labels: short /slots?model= probes (≤1.5s) — llama-router requires a model id.
+    # Loaded badges: last Sync, overridden when fleet cache says source is down.
+    # Capacity from cache only (background fleet worker seeds load_cache).
     rows = list_catalog(db)
     auth = get_auth_settings(db)
     auto_vl = bool(auth.auto_vl_routing)
@@ -78,7 +78,10 @@ def models_page(
     weight_status = catalog_weight_suggestions(db)
     observed = model_perf_by_id(model_perf_averages(db, key_ids=None, lookback_days=7))
     cap_source_names = {r.source_name for r in rows if (r.source_name or "").strip()}
-    capacity = capacities_by_source(db, cap_source_names, probe=True)
+    from ...data.fleet_status import kick_refresh
+
+    kick_refresh()
+    capacity = capacities_by_source(db, cap_source_names, probe=False)
     groups = []
     for kind, kind_rows in catalog_grouped_by_kind(rows):
         pairs = group_kind_rows_vl_pairs(

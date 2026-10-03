@@ -265,6 +265,23 @@ def test_users_page_links_create_key_for_members(sec):
     assert f'/keys/new?owner_user_id={world.alice_id}' in resp.text
     assert f'/keys/new?owner_user_id={world.bob_id}' in resp.text
     assert f'/keys?owner_user_id={world.alice_id}' in resp.text
+    assert "Add people" in resp.text
+    # No inline key rotate/revoke on the users list (invite revoke is OK).
+    assert 'action="/keys/' not in resp.text
+
+
+def test_admin_you_keys_are_self_scoped(sec):
+    """You → API Keys lists only the admin's keys, not the whole fleet."""
+    client, world = sec
+    _login(client, BOOTSTRAP_USER, BOOTSTRAP_PASSWORD)
+    resp = client.get("/keys", follow_redirects=False)
+    assert resp.status_code == 200
+    assert "All owners" not in resp.text
+    assert f'id="key-row-{world.bob_key_id}"' not in resp.text
+    assert f'id="key-row-{world.alice_key_id}"' not in resp.text
+    me = client.get("/me", follow_redirects=False)
+    assert me.status_code == 200
+    assert "All owners" not in me.text
 
 
 def test_keys_list_filter_by_owner(sec):

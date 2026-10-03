@@ -1,14 +1,12 @@
-"""Admin ops: model limits, audit, alerts, me-dashboard."""
+"""Admin ops helpers + audit/alerts pages (You /me lives in portal)."""
 
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import func
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 
 from ..audit import verify_audit_chain, write_audit
 from ..data.backends import source_names
@@ -20,15 +18,8 @@ from ..data.models import (
     AuditLog,
     ModelLimit,
     Team,
-    utcnow,
 )
-from .session import (
-    Forbidden,
-    can_access_team,
-    require_platform_admin,
-    require_user,
-    user_teams,
-)
+from .session import require_platform_admin
 from .templating import make_templates
 
 templates = make_templates()
@@ -89,48 +80,6 @@ def sync_team_model_limits(db: Session, team: Team, raw: str) -> None:
     db.query(ModelLimit).filter(ModelLimit.team_id == team.id).delete()
     for item in _parse_model_limits(raw, source_names(db)):
         db.add(ModelLimit(team_id=team.id, **item))
-
-
-@router.get("/me", response_class=HTMLResponse)
-def me_dashboard(
-    request: Request,
-    db: Annotated[Session, Depends(get_db)],
-    user: Annotated[WebUser, Depends(require_user)],
-):
-    """User dashboard — owner-scoped or team-scoped depending on settings."""
-    import os
-
-    from ..config import public_api_base
-    from ..stats import area_chart_svg, pulse_stats
-    from .accounts import teams_feature_enabled
-    from .session import scope_keys_query, scoped_key_ids
-
-    teams_on = teams_feature_enabled(db)
-    keys_q = scope_keys_query(db.query(ApiKey), user, teams_enabled=teams_on)
-    keys = keys_q.order_by(ApiKey.created_at.desc()).limit(20).all()
-    visible_ids = scoped_key_ids(db, user, teams_enabled=teams_on)
-    pulse = pulse_stats(db, key_ids=None if user.is_platform_admin else visible_ids)
-    api_base = public_api_base()
-    return templates.TemplateResponse(
-        request,
-        "me.html",
-        {
-            "user": user,
-            "api_base": api_base,
-            "keys": keys,
-            "flash_ok": request.session.pop("flash_ok", None),
-            "flash_err": request.session.pop("flash_err", None),
-            "pulse": pulse,
-            "pulse_status": "Healthy" if pulse["count"] else "Idle",
-            "pulse_cta": {"href": "/keys/new", "label": "New key"},
-            "chart_pulse": area_chart_svg(
-                pulse["series"], fill_id="gw-pulse", aria="Throughput last 60 minutes"
-            ),
-            "nav": "me",
-            "is_admin": user.is_platform_admin,
-            "teams_enabled": teams_on,
-        },
-    )
 
 
 @router.get("/audit", response_class=HTMLResponse)
