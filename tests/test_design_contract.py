@@ -100,8 +100,11 @@ PAGE_KIND: dict[str, str] = {
     "_user_grant_expand.html": "fragment",
     "_user_grant_limits_expand.html": "fragment",
     "_user_grant_sources_expand.html": "fragment",
+    "_catalog_model_row.html": "fragment",
+    "_usage_filters.html": "fragment",
     "partials/model_picker.html": "fragment",
     "partials/model_meta.html": "fragment",
+    "partials/_alias_card.html": "fragment",
 }
 
 # SMTP From display name is email identity, not UI chrome.

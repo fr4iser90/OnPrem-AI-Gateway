@@ -205,6 +205,16 @@ pytest -q -m "not integration"          # default / CI — no LAN required
 INTEGRATION=1 pytest -m integration -q
 ```
 
+### Git hooks (optional, per clone)
+
+New HTML under `app/web/templates/` must be listed in `PAGE_KIND` (`tests/test_design_contract.py`) or CI fails. Catch that before push:
+
+```bash
+./scripts/install-git-hooks.sh   # sets core.hooksPath=.githooks
+```
+
+The pre-commit hook runs `pytest tests/test_design_contract.py` when templates, static UI assets, app Python, or the contract file are staged.
+
 ---
 
 ## License

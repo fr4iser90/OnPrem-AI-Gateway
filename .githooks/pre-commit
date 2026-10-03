@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Fail the commit if Pulse design-contract drift would break CI.
+# Install once:  git config core.hooksPath .githooks
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+# Only run when UI surfaces or the contract itself are in the commit.
+relevant="$(git diff --cached --name-only --diff-filter=ACMR -- \
+  'app/web/templates/' \
+  'app/web/static/style.css' \
+  'app/web/static/favicon.svg' \
+  'app/**/*.py' \
+  'tests/test_design_contract.py' || true)"
+
+if [[ -z "${relevant}" ]]; then
+  exit 0
+fi
+
+if [[ -x .venv/bin/pytest ]]; then
+  PYTEST=.venv/bin/pytest
+elif command -v pytest >/dev/null 2>&1; then
+  PYTEST=pytest
+else
+  echo "pre-commit: pytest not found (activate .venv or pip install -r requirements-dev.txt)" >&2
+  exit 1
+fi
+
+echo "pre-commit: Pulse design contract…"
+"$PYTEST" -q tests/test_design_contract.py
