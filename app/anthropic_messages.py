@@ -46,7 +46,7 @@ ANTHROPIC_SSE_PING = b'event: ping\ndata: {"type": "ping"}\n\n'
 # bytes for Claude Code's byte-level idle watchdog (gateway / custom base URL).
 ANTHROPIC_SSE_COMMENT_PING = b": keepalive\n\n"
 # Claude Code shows "Waiting for API response" after ~20s wire silence.
-ANTHROPIC_SSE_PING_INTERVAL_SEC = 2.0
+ANTHROPIC_SSE_PING_INTERVAL_SEC = 1.0
 
 
 def anthropic_sse_ping() -> bytes:

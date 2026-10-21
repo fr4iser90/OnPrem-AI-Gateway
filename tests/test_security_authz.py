@@ -378,6 +378,53 @@ def test_api_invalid_key_is_unauthorized(sec):
     assert resp.json()["error"] == "unauthorized"
 
 
+def test_anthropic_sse_still_requires_auth(sec, monkeypatch):
+    """Early SSE keepalives must NOT skip authorize — no upstream without auth."""
+    import httpx
+
+    client, _world = sec
+    sends: list[str] = []
+
+    class _NoUpstream:
+        def __init__(self, *a, **k):
+            pass
+
+        async def send(self, request, **kwargs):
+            sends.append(str(request.url))
+            raise AssertionError("upstream must not open without authorize")
+
+        async def aclose(self):
+            return None
+
+        def build_request(self, method, url, **kwargs):
+            return httpx.Request(method, url)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _NoUpstream)
+
+    resp = client.post(
+        "/v1/onprem/entry",
+        headers={
+            "anthropic-version": "2023-06-01",
+            "x-api-key": "not-a-real-key",
+            "x-original-uri": "/v1/messages",
+            "content-type": "application/json",
+        },
+        json={
+            "model": "m1",
+            "max_tokens": 16,
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    # Early SSE returns 200 event-stream; auth failure is an SSE error frame.
+    assert resp.status_code == 200
+    assert "text/event-stream" in (resp.headers.get("content-type") or "")
+    body = resp.content
+    assert b"event: error" in body
+    assert b"message_start" in body or b"keepalive" in body or b"ping" in body
+    assert sends == []
+
+
 def test_api_key_denied_ungranted_service(sec):
     client, _world = sec
     resp = _auth_check(

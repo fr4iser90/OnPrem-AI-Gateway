@@ -608,6 +608,7 @@ def create_app() -> FastAPI:
         anthropic_model: str | None = None,
         anthropic_stream: bool = False,
         pre_upstream=None,
+        prepare=None,
     ):
         """Shared streaming proxy + per-source GPU sample → finalize UsageEvent.
 
@@ -622,10 +623,15 @@ def create_app() -> FastAPI:
         upstream headers, and emit pings while llama.cpp is still connecting /
         queueing — otherwise Claude Code idle-aborts (multi-minute retry).
 
-        pre_upstream: optional async () -> str | None run inside the SSE
-        generator (after first pings). Used to defer source admission / preflight
-        so a 30s GPU queue wait still emits keepalive bytes. Return an error
-        message to end the stream; None continues to upstream.
+        Auth is NEVER skipped. ``prepare`` (and/or ``pre_upstream``) still run
+        ``authorize`` + routing + admission inside the generator; failed auth
+        yields an SSE ``error`` event and never opens upstream.
+
+        prepare: optional async () -> dict | str. Runs after bootstrap+ping.
+        On success returns connection fields (url/headers/body/usage_id/…).
+        On failure returns an error string (SSE error, no upstream).
+        pre_upstream: optional async () -> str | None for deferred gates only
+        when url is already known (legacy path).
         """
         import asyncio
         import time as time_mod
@@ -637,14 +643,25 @@ def create_app() -> FastAPI:
         from .metering_parse import parse_upstream_metrics
         from .usage_pool import fetch_gpu_watts, watt_hours_from_samples
 
-        hold_sec = clamp_max_hold_sec(max_hold_sec)
+        # Mutable connection state — ``prepare`` may fill these after SSE starts.
+        conn: dict = {
+            "url": url,
+            "headers": dict(headers) if headers else {},
+            "body": body,
+            "usage_id": usage_id,
+            "concurrency_lease": concurrency_lease,
+            "hold_sec": clamp_max_hold_sec(max_hold_sec),
+            "probe": (probe_url or "").strip(),
+            "anthropic_model": anthropic_model,
+        }
+        hold_sec = conn["hold_sec"]
 
         # Cap buffered body for usage/timings parse (keep full for small JSON; tail for huge SSE).
         _BUF_MAX = 2 * 1024 * 1024
         _BUF_TAIL = 256 * 1024
 
         samples: list[float] = []
-        probe = (probe_url or "").strip()
+        probe = conn["probe"]
         if probe:
             power_status = "unreachable"  # until we get a sample
         else:
@@ -652,9 +669,10 @@ def create_app() -> FastAPI:
 
         async def _sample() -> None:
             nonlocal power_status
-            if not probe:
+            p = conn["probe"]
+            if not p:
                 return
-            w = await asyncio.to_thread(fetch_gpu_watts, probe)
+            w = await asyncio.to_thread(fetch_gpu_watts, p)
             if w is not None and w > 0:
                 samples.append(float(w))
                 power_status = "metered"
@@ -679,7 +697,8 @@ def create_app() -> FastAPI:
             content_type: str | None,
         ) -> None:
             # Called from async finally via sync DB — keep sync like before.
-            if usage_id is None or SessionLocal is None:
+            uid = conn["usage_id"]
+            if uid is None or SessionLocal is None:
                 return
             duration_ms = (time_mod.perf_counter() - t0) * 1000.0
             avg_w, wh = watt_hours_from_samples(
@@ -696,7 +715,7 @@ def create_app() -> FastAPI:
             try:
                 finalize_usage_metering(
                     db,
-                    usage_id,
+                    uid,
                     duration_ms=duration_ms,
                     watts=avg_w,
                     watt_hours=wh,
@@ -725,7 +744,9 @@ def create_app() -> FastAPI:
             }
 
             async def _stream_early():
-                client = httpx.AsyncClient(timeout=client_timeout)
+                nonlocal power_status
+                # Long timeout until prepare fills hold_sec; recreate if needed.
+                client = httpx.AsyncClient(timeout=httpx.Timeout(3600.0, connect=10.0))
                 upstream = None
                 upstream_status = 502
                 content_type: str | None = None
@@ -734,7 +755,9 @@ def create_app() -> FastAPI:
                 watchdog: asyncio.Task | None = None
                 pending: asyncio.Task | None = None
                 send_task: asyncio.Task | None = None
-                xform = OpenAIToAnthropicStream(model=anthropic_model)
+                prep_task: asyncio.Task | None = None
+                gate_task: asyncio.Task | None = None
+                xform = OpenAIToAnthropicStream(model=conn["anthropic_model"])
                 last_sample = time_mod.perf_counter()
 
                 def _meter_chunk(chunk: bytes) -> None:
@@ -752,27 +775,92 @@ def create_app() -> FastAPI:
                         if len(buf) > _BUF_TAIL:
                             del buf[: len(buf) - _BUF_TAIL]
 
+                async def _ping_while(task: asyncio.Task):
+                    nonlocal last_sample
+                    while not task.done():
+                        done, _ = await asyncio.wait(
+                            {task},
+                            timeout=ANTHROPIC_SSE_PING_INTERVAL_SEC,
+                        )
+                        if not done:
+                            yield anthropic_sse_ping()
+                            now = time_mod.perf_counter()
+                            if conn["probe"] and (now - last_sample) >= 1.0:
+                                await _sample()
+                                last_sample = now
+
+                async def _reap_side_task(task: asyncio.Task | None) -> None:
+                    """Cancel orphaned prepare/gate; release lease if never adopted."""
+                    if task is None:
+                        return
+                    if not task.done():
+                        task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await task
+                        return
+                    with suppress(Exception):
+                        result = task.result()
+                        # Prepare finished after client disconnect and "transferred"
+                        # the lease into the dict — release if stream never adopted it.
+                        if (
+                            isinstance(result, dict)
+                            and conn.get("concurrency_lease") is None
+                        ):
+                            release_concurrency_lease(result.get("concurrency_lease"))
+
                 try:
                     for piece in xform.bootstrap():
                         yield piece
                     yield anthropic_sse_ping()
 
+                    # Auth + routing + admission MUST still run — just inside SSE
+                    # so Claude gets keepalive bytes while authorize/DB/queue work.
+                    if prepare is not None:
+                        prep_task = asyncio.create_task(prepare())
+                        async for ping in _ping_while(prep_task):
+                            yield ping
+                        prep = prep_task.result()
+                        prep_task = None  # consumed; finally must not re-release
+                        if isinstance(prep, str):
+                            yield anthropic_sse_error(prep, err_type="api_error")
+                            for piece in xform.flush():
+                                yield piece
+                            return
+                        if not isinstance(prep, dict):
+                            yield anthropic_sse_error(
+                                "auth_setup_failed", err_type="api_error"
+                            )
+                            for piece in xform.flush():
+                                yield piece
+                            return
+                        conn["url"] = prep["url"]
+                        conn["headers"] = prep["headers"]
+                        conn["body"] = prep["body"]
+                        conn["usage_id"] = prep.get("usage_id")
+                        conn["concurrency_lease"] = prep.get("concurrency_lease")
+                        conn["hold_sec"] = clamp_max_hold_sec(
+                            int(prep.get("max_hold_sec") or 0)
+                        )
+                        conn["probe"] = (prep.get("probe_url") or "").strip()
+                        if conn["probe"]:
+                            power_status = "unreachable"
+                        if prep.get("anthropic_model"):
+                            conn["anthropic_model"] = prep["anthropic_model"]
+                        hs = conn["hold_sec"]
+                        if hs > 0:
+                            await client.aclose()
+                            client = httpx.AsyncClient(
+                                timeout=httpx.Timeout(hs, connect=10.0)
+                            )
+
                     # Admission/preflight may block up to ~30s — ping while waiting
                     # or Claude Code idle-aborts at ~20s before we ever reach upstream.
                     if pre_upstream is not None:
                         gate_task = asyncio.create_task(pre_upstream())
-                        while not gate_task.done():
-                            done, _ = await asyncio.wait(
-                                {gate_task},
-                                timeout=ANTHROPIC_SSE_PING_INTERVAL_SEC,
-                            )
-                            if not done:
-                                yield anthropic_sse_ping()
-                                now = time_mod.perf_counter()
-                                if probe and (now - last_sample) >= 1.0:
-                                    await _sample()
-                                    last_sample = now
+                        async for ping in _ping_while(gate_task):
+                            yield ping
                         gate_err = gate_task.result()
+                        gate_task = None
                         if gate_err:
                             yield anthropic_sse_error(
                                 str(gate_err), err_type="api_error"
@@ -781,26 +869,28 @@ def create_app() -> FastAPI:
                                 yield piece
                             return
 
+                    if not (conn["url"] or "").strip():
+                        yield anthropic_sse_error(
+                            "unauthorized", err_type="authentication_error"
+                        )
+                        for piece in xform.flush():
+                            yield piece
+                        return
+
                     send_task = asyncio.create_task(
                         client.send(
                             client.build_request(
-                                method, url, headers=headers, content=body
+                                method,
+                                conn["url"],
+                                headers=conn["headers"],
+                                content=conn["body"],
                             ),
                             stream=True,
                         )
                     )
                     # Ping while waiting for upstream response headers (queue / load).
-                    while not send_task.done():
-                        done, _ = await asyncio.wait(
-                            {send_task},
-                            timeout=ANTHROPIC_SSE_PING_INTERVAL_SEC,
-                        )
-                        if not done:
-                            yield anthropic_sse_ping()
-                            now = time_mod.perf_counter()
-                            if probe and (now - last_sample) >= 1.0:
-                                await _sample()
-                                last_sample = now
+                    async for ping in _ping_while(send_task):
+                        yield ping
 
                     try:
                         upstream = send_task.result()
@@ -838,10 +928,11 @@ def create_app() -> FastAPI:
                             yield piece
                         return
 
-                    if hold_sec > 0:
+                    hs = int(conn["hold_sec"] or 0)
+                    if hs > 0:
 
                         async def _kill_after_hold() -> None:
-                            await asyncio.sleep(hold_sec)
+                            await asyncio.sleep(hs)
                             with suppress(Exception):
                                 await upstream.aclose()
 
@@ -858,7 +949,7 @@ def create_app() -> FastAPI:
                         if not done:
                             yield anthropic_sse_ping()
                             now = time_mod.perf_counter()
-                            if probe and (now - last_sample) >= 1.0:
+                            if conn["probe"] and (now - last_sample) >= 1.0:
                                 await _sample()
                                 last_sample = now
                             continue
@@ -869,7 +960,7 @@ def create_app() -> FastAPI:
                             break
                         pending = None
                         now = time_mod.perf_counter()
-                        if probe and (now - last_sample) >= 1.0:
+                        if conn["probe"] and (now - last_sample) >= 1.0:
                             await _sample()
                             last_sample = now
                         _meter_chunk(chunk)
@@ -883,6 +974,8 @@ def create_app() -> FastAPI:
                             yield piece
                     raise
                 finally:
+                    await _reap_side_task(prep_task)
+                    await _reap_side_task(gate_task)
                     if send_task is not None:
                         if not send_task.done():
                             send_task.cancel()
@@ -906,7 +999,7 @@ def create_app() -> FastAPI:
                             await upstream.aclose()
                     with suppress(Exception):
                         await client.aclose()
-                    release_concurrency_lease(concurrency_lease)
+                    release_concurrency_lease(conn["concurrency_lease"])
                     await _sample()
                     _finalize(
                         buf=bytes(buf),
@@ -1168,6 +1261,277 @@ def create_app() -> FastAPI:
                 status_code=resp.status_code,
             )
 
+        hop = {
+            "content-type",
+            "content-length",
+            "host",
+            "connection",
+            "transfer-encoding",
+            "x-onprem-ticket",
+            "x-onprem-proxy",
+            # Anthropic client headers — not for OpenAI/llama.cpp upstreams
+            "anthropic-version",
+            "anthropic-beta",
+            "anthropic-dangerous-direct-browser-access",
+        }
+        req_headers = {k: v for k, v in request.headers.items()}
+        req_query = str(request.url.query or "")
+
+        # Anthropic SSE: return event-stream NOW (first byte), but NEVER skip
+        # authorize — routing/auth/admission run inside the pinging generator.
+        # Failed auth → SSE error event; upstream opens only after authorize 204.
+        if anthropic_client and anthropic_stream:
+            openai_body = body
+            ct = content_type or "application/json"
+            early_model = anthropic_model
+
+            async def _prepare_auth_and_route() -> dict | str:
+                """authorize + route + gates. Returns conn dict or error string."""
+                from .data.db import SessionLocal as _SL
+                from .usage_pool import probe_url_for_source
+
+                if _SL is None:
+                    return "db_unavailable"
+                db2 = _SL()
+                lease_hold: ConcurrencyLease | None = None
+                try:
+                    named, upstream_uri = split_source_path(uri)
+                    auth_cfg = get_auth_settings(db2)
+                    auto_rewrite: str | None = None
+                    alias_pref: str | None = None
+                    work_body = openai_body
+                    if named is not None:
+                        src = get_source_by_name(db2, named)
+                        if src is None:
+                            return f"unknown_source: {named}"
+                        service = src.name
+                        kind = src.kind
+                        upstream_uri = upstream_uri or "/"
+                        if kind == "chat" and work_body:
+                            asked = extract_model(work_body, ct)
+                            work_body, auto_rewrite, _pref = apply_client_model_rewrites(
+                                db2, work_body, asked=asked, auth=auth_cfg
+                            )
+                    else:
+                        upstream_uri = upstream_path_for_proxy(uri)
+                        kind = kind_from_upstream_path(upstream_uri)
+                        if kind is None:
+                            return f"unknown_route: {uri}"
+                        if kind == "chat" and work_body:
+                            asked = extract_model(work_body, ct)
+                            work_body, auto_rewrite, alias_pref = (
+                                apply_client_model_rewrites(
+                                    db2, work_body, asked=asked, auth=auth_cfg
+                                )
+                            )
+                        model = extract_request_model(kind, work_body, ct)
+                        src = resolve_routed_source(
+                            db2,
+                            kind,
+                            model=model,
+                            raw_key=raw_key,
+                            auth=auth_cfg,
+                            preferred_source=alias_pref,
+                        )
+                        if src is None:
+                            if not (model or "").strip():
+                                return "model is required"
+                            return f"unknown_model: {model}"
+                        service = src.name
+
+                    vl_rewrite: str | None = None
+                    if (
+                        kind == "chat"
+                        and work_body
+                        and auth_cfg.auto_vl_routing
+                        and request_needs_vision(work_body, ct)
+                    ):
+                        asked = extract_model(work_body, ct)
+                        sibling = resolve_vl_model(db2, service, asked)
+                        if sibling and sibling != asked:
+                            work_body = rewrite_json_model(work_body, sibling)
+                            vl_rewrite = sibling
+
+                    # AUTHORIZE — never skipped. No upstream without 204.
+                    result = authorize(
+                        db2,
+                        raw_key=raw_key,
+                        service=service,
+                        kind=kind,
+                        method=method,
+                        path=upstream_uri,
+                        host=host,
+                        client_ip=client_ip,
+                        body=work_body,
+                        content_type=ct,
+                        defer_metering=True,
+                    )
+                    lease_hold = result.concurrency_lease
+                    if result.status != 204:
+                        release_concurrency_lease(result.concurrency_lease)
+                        lease_hold = None
+                        return str(result.reason or "unauthorized")
+
+                    backend = address_for_source(db2, service)
+                    if not backend:
+                        release_concurrency_lease(result.concurrency_lease)
+                        lease_hold = None
+                        return "backend_not_configured"
+
+                    src_row = get_source_by_name(db2, service)
+                    entry_lease = _attach_source_key(result.concurrency_lease, backend)
+                    lease_hold = entry_lease
+
+                    pf_block = await _preflight_block_async(
+                        auth_cfg=auth_cfg,
+                        backend=backend,
+                        kind=kind,
+                        model=result.model,
+                        service=service,
+                        lease=result.concurrency_lease,
+                        src=src_row,
+                    )
+                    if pf_block is not None:
+                        try:
+                            data = json.loads(
+                                pf_block.body.decode("utf-8")
+                                if pf_block.body
+                                else b"{}"
+                            )
+                        except (
+                            json.JSONDecodeError,
+                            UnicodeDecodeError,
+                            AttributeError,
+                        ):
+                            data = {}
+                        if not isinstance(data, dict):
+                            data = {}
+                        lease_hold = None  # preflight already released on fail
+                        return str(
+                            data.get("error")
+                            or data.get("detail")
+                            or "preflight_failed"
+                        )
+
+                    adm_block = await _source_admission_block_async(
+                        auth_cfg=auth_cfg,
+                        src=src_row,
+                        backend=backend,
+                        kind=kind,
+                        model=result.model,
+                        service=service,
+                        lease=result.concurrency_lease,
+                        priority=result.priority,
+                    )
+                    if adm_block is not None:
+                        try:
+                            data = json.loads(
+                                adm_block.body.decode("utf-8")
+                                if adm_block.body
+                                else b"{}"
+                            )
+                        except (
+                            json.JSONDecodeError,
+                            UnicodeDecodeError,
+                            AttributeError,
+                        ):
+                            data = {}
+                        if not isinstance(data, dict):
+                            data = {}
+                        lease_hold = None
+                        return str(
+                            data.get("error")
+                            or data.get("detail")
+                            or "admission_failed"
+                        )
+
+                    api_style = (
+                        getattr(src_row, "api_style", None)
+                        if src_row is not None
+                        else None
+                    )
+                    rewrite_uri = map_upstream_path(
+                        upstream_uri, kind=kind, api_style=api_style
+                    )
+                    final_model = vl_rewrite or auto_rewrite
+                    if final_model:
+                        work_body = rewrite_json_model(work_body, final_model)
+                    if (
+                        kind == "chat"
+                        and work_body
+                        and getattr(auth_cfg, "soft_sampling_defaults", False)
+                    ):
+                        from .sampling_merge import soft_sampling_body
+
+                        mid = (
+                            final_model
+                            or result.model
+                            or extract_model(work_body, ct)
+                        )
+                        key_prof = ""
+                        if result.api_key is not None:
+                            key_prof = (
+                                getattr(result.api_key, "sampling_profile", "") or ""
+                            )
+                        filled = soft_sampling_body(
+                            db2,
+                            work_body,
+                            ct,
+                            model_id=mid,
+                            headers=req_headers,
+                            enabled=True,
+                            key_profile=key_prof,
+                        )
+                        if filled is not None:
+                            work_body = filled
+
+                    up_url = f"http://{backend}{rewrite_uri}"
+                    up_headers = {
+                        k: v
+                        for k, v in req_headers.items()
+                        if k.lower() not in hop
+                    }
+                    up_headers["content-type"] = ct
+                    up_headers["content-length"] = str(len(work_body))
+                    lease_hold = None  # ownership transfers to stream finally
+                    return {
+                        "url": up_url,
+                        "headers": up_headers,
+                        "body": work_body,
+                        "usage_id": result.usage_event_id,
+                        "probe_url": probe_url_for_source(src_row),
+                        "concurrency_lease": entry_lease,
+                        "max_hold_sec": int(
+                            getattr(auth_cfg, "source_admission_max_hold_sec", 0) or 0
+                        ),
+                        "anthropic_model": early_model
+                        or final_model
+                        or result.model,
+                    }
+                except Exception:
+                    import logging
+
+                    logging.getLogger("uvicorn.error").exception(
+                        "anthropic_sse prepare auth_setup_failed"
+                    )
+                    return "auth_setup_failed"
+                finally:
+                    # Only releases if prepare failed before handing lease to stream.
+                    release_concurrency_lease(lease_hold)
+                    db2.close()
+
+            return await _stream_upstream_metered(
+                method=method,
+                url="",
+                headers={},
+                body=openai_body,
+                usage_id=None,
+                anthropic_client=True,
+                anthropic_model=early_model,
+                anthropic_stream=True,
+                prepare=_prepare_auth_and_route,
+            )
+
         named, upstream_uri = split_source_path(uri)
         auth_cfg = get_auth_settings(db)
         auto_rewrite: str | None = None
@@ -1264,36 +1628,31 @@ def create_app() -> FastAPI:
 
         src_row = get_source_by_name(db, service)
         entry_lease = _attach_source_key(result.concurrency_lease, backend)
-        # Anthropic streaming: do NOT wait for admission/preflight before SSE.
-        # Default source_queue_timeout is 30s; Claude Code idle-aborts at ~20s
-        # with zero bytes — so gates run inside the pinging SSE generator.
-        defer_gates = bool(anthropic_client and anthropic_stream)
-        if not defer_gates:
-            pf_block = await _preflight_block_async(
-                auth_cfg=auth_cfg,
-                backend=backend,
-                kind=kind,
-                model=result.model,
-                service=service,
-                lease=result.concurrency_lease,
-                src=src_row,
-            )
-            pf_block = _maybe_anthropic_json(pf_block)
-            if pf_block is not None:
-                return pf_block
-            adm_block = await _source_admission_block_async(
-                auth_cfg=auth_cfg,
-                src=src_row,
-                backend=backend,
-                kind=kind,
-                model=result.model,
-                service=service,
-                lease=result.concurrency_lease,
-                priority=result.priority,
-            )
-            adm_block = _maybe_anthropic_json(adm_block)
-            if adm_block is not None:
-                return adm_block
+        pf_block = await _preflight_block_async(
+            auth_cfg=auth_cfg,
+            backend=backend,
+            kind=kind,
+            model=result.model,
+            service=service,
+            lease=result.concurrency_lease,
+            src=src_row,
+        )
+        pf_block = _maybe_anthropic_json(pf_block)
+        if pf_block is not None:
+            return pf_block
+        adm_block = await _source_admission_block_async(
+            auth_cfg=auth_cfg,
+            src=src_row,
+            backend=backend,
+            kind=kind,
+            model=result.model,
+            service=service,
+            lease=result.concurrency_lease,
+            priority=result.priority,
+        )
+        adm_block = _maybe_anthropic_json(adm_block)
+        if adm_block is not None:
+            return adm_block
         api_style = getattr(src_row, "api_style", None) if src_row is not None else None
         rewrite_uri = map_upstream_path(upstream_uri, kind=kind, api_style=api_style)
         final_model = vl_rewrite or auto_rewrite
@@ -1311,7 +1670,7 @@ def create_app() -> FastAPI:
                 body,
                 content_type,
                 model_id=mid,
-                headers=request.headers,
+                headers=req_headers,
                 enabled=True,
                 key_profile=key_prof,
             )
@@ -1320,73 +1679,15 @@ def create_app() -> FastAPI:
 
         url = f"http://{backend}{rewrite_uri}"
         # Claude Code sends ?beta=true on /v1/messages — do not forward to OpenAI/llama.cpp.
-        if request.url.query and not anthropic_client:
-            url = f"{url}?{request.url.query}"
-        hop = {
-            "content-type",
-            "content-length",
-            "host",
-            "connection",
-            "transfer-encoding",
-            "x-onprem-ticket",
-            "x-onprem-proxy",
-            # Anthropic client headers — not for OpenAI/llama.cpp upstreams
-            "anthropic-version",
-            "anthropic-beta",
-            "anthropic-dangerous-direct-browser-access",
-        }
+        if req_query and not anthropic_client:
+            url = f"{url}?{req_query}"
         up_headers = {
-            k: v for k, v in request.headers.items() if k.lower() not in hop
+            k: v for k, v in req_headers.items() if k.lower() not in hop
         }
         up_headers["content-type"] = content_type or "application/json"
         up_headers["content-length"] = str(len(body))
 
         from .usage_pool import probe_url_for_source
-
-        async def _pre_upstream_gates() -> str | None:
-            """Run deferred preflight+admission; return error text or None."""
-            pf_block = await _preflight_block_async(
-                auth_cfg=auth_cfg,
-                backend=backend,
-                kind=kind,
-                model=result.model,
-                service=service,
-                lease=result.concurrency_lease,
-                src=src_row,
-            )
-            if pf_block is not None:
-                try:
-                    data = json.loads(
-                        pf_block.body.decode("utf-8") if pf_block.body else b"{}"
-                    )
-                except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
-                    data = {}
-                if not isinstance(data, dict):
-                    data = {}
-                return str(data.get("error") or data.get("detail") or "preflight_failed")
-            adm_block = await _source_admission_block_async(
-                auth_cfg=auth_cfg,
-                src=src_row,
-                backend=backend,
-                kind=kind,
-                model=result.model,
-                service=service,
-                lease=result.concurrency_lease,
-                priority=result.priority,
-            )
-            if adm_block is not None:
-                try:
-                    data = json.loads(
-                        adm_block.body.decode("utf-8") if adm_block.body else b"{}"
-                    )
-                except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
-                    data = {}
-                if not isinstance(data, dict):
-                    data = {}
-                return str(
-                    data.get("error") or data.get("detail") or "admission_failed"
-                )
-            return None
 
         return await _stream_upstream_metered(
             method=method,
@@ -1402,7 +1703,6 @@ def create_app() -> FastAPI:
             or final_model
             or result.model,
             anthropic_stream=anthropic_stream,
-            pre_upstream=_pre_upstream_gates if defer_gates else None,
         )
 
     @app.api_route("/v1/onprem/forward", methods=["POST", "PUT", "PATCH"])
