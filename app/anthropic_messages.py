@@ -289,17 +289,15 @@ def _message_to_openai_messages(role: str, content: Any) -> list[dict[str, Any]]
     out: list[dict[str, Any]] = []
 
     if role == "system":
-        # Mid-conversation system (Claude Code / newer Anthropic) → OpenAI system.
+        # Caller decides leading vs mid-conversation (see anthropic_request_to_openai).
         text = "".join(text_only) if not has_media else ""
         if has_media and text_parts:
-            # Flatten multimodal system to text for upstreams that reject arrays.
             bits = []
             for p in text_parts:
                 if isinstance(p, dict) and p.get("type") == "text":
                     bits.append(str(p.get("text") or ""))
             text = "".join(bits)
-        if text.strip() or not tool_results:
-            out.append({"role": "system", "content": text})
+        out.append({"role": "system", "content": text})
         return out
 
     if role == "assistant":
@@ -329,6 +327,22 @@ def _message_to_openai_messages(role: str, content: Any) -> list[dict[str, Any]]
     elif not tool_results:
         out.append({"role": role, "content": ""})
     return out
+
+
+def _openai_has_dialogue(messages: list[dict[str, Any]]) -> bool:
+    """True once a user/assistant/tool turn exists (system may no longer be prepended)."""
+    return any(
+        isinstance(m, dict) and str(m.get("role") or "") not in {"", "system"}
+        for m in messages
+    )
+
+
+def _mid_system_as_user(text: str) -> dict[str, Any]:
+    """llama.cpp / OpenAI: system role only at the start — remap mid-turn system."""
+    body = (text or "").strip()
+    if body:
+        return {"role": "user", "content": f"<system>\n{body}\n</system>"}
+    return {"role": "user", "content": "<system></system>"}
 
 
 def anthropic_request_to_openai(body: bytes) -> tuple[bytes, bool]:
@@ -361,9 +375,7 @@ def anthropic_request_to_openai(body: bytes) -> tuple[bytes, bool]:
             continue
         role = str(msg.get("role") or "").strip().lower()
         # Claude Code / newer Anthropic: mid-conversation role=system in messages[].
-        # Also accept empty system entries (effort markers) without 400.
         if role not in {"user", "assistant", "system"}:
-            # Unknown roles: treat like user text so clients don't hard-fail.
             role = "user"
         content = msg.get("content")
         # Empty system messages (Claude Code effort markers) → skip
@@ -372,6 +384,18 @@ def anthropic_request_to_openai(body: bytes) -> tuple[bytes, bool]:
             or content == ""
             or (isinstance(content, list) and len(content) == 0)
         ):
+            continue
+        if role == "system":
+            pieces = _message_to_openai_messages("system", content)
+            text = ""
+            if pieces and isinstance(pieces[0], dict):
+                text = str(pieces[0].get("content") or "")
+            # OpenAI/llama.cpp: "System message must be at the beginning."
+            # Leading system stays system; after dialogue → user-wrapped (Claude Code retry shape).
+            if _openai_has_dialogue(out_messages):
+                out_messages.append(_mid_system_as_user(text))
+            else:
+                out_messages.append({"role": "system", "content": text})
             continue
         out_messages.extend(_message_to_openai_messages(role, content))
 

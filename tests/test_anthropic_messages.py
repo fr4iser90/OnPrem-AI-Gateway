@@ -65,7 +65,7 @@ def test_request_text_and_system():
 
 
 def test_request_system_role_inside_messages():
-    """Claude Code / mid-conversation system — must not 400."""
+    """Claude Code mid-conversation system → user wrap (llama.cpp rejects mid system)."""
     raw = json.dumps(
         {
             "model": "local-alias",
@@ -84,9 +84,27 @@ def test_request_system_role_inside_messages():
     msgs = json.loads(out)["messages"]
     assert msgs[0] == {"role": "user", "content": "hi"}
     assert msgs[1] == {"role": "assistant", "content": "hello"}
-    assert msgs[2] == {"role": "system", "content": "Stay concise."}
+    assert msgs[2]["role"] == "user"
+    assert "Stay concise." in msgs[2]["content"]
+    assert "<system>" in msgs[2]["content"]
     assert msgs[3] == {"role": "user", "content": "again"}
     assert "thinking" not in json.loads(out)
+
+
+def test_request_leading_system_in_messages_stays_system():
+    raw = json.dumps(
+        {
+            "model": "x",
+            "max_tokens": 10,
+            "messages": [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "hi"},
+            ],
+        }
+    ).encode()
+    msgs = json.loads(anthropic_request_to_openai(raw)[0])["messages"]
+    assert msgs[0] == {"role": "system", "content": "You are helpful."}
+    assert msgs[1] == {"role": "user", "content": "hi"}
 
 
 def test_request_empty_system_message_skipped():
