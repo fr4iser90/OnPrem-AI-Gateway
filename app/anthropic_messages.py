@@ -51,6 +51,16 @@ def anthropic_sse_ping() -> bytes:
     return ANTHROPIC_SSE_PING
 
 
+def anthropic_sse_error(message: str, *, err_type: str = "api_error") -> bytes:
+    """SSE ``error`` event (used when HTTP status is already 200 after early SSE)."""
+    payload = anthropic_error_body(message, err_type=err_type)
+    return (
+        f"event: error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode(
+            "utf-8"
+        )
+    )
+
+
 def _msg_id() -> str:
     return f"msg_{uuid.uuid4().hex}"
 

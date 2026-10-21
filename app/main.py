@@ -43,6 +43,7 @@ from .anthropic_messages import (
     OpenAIToAnthropicStream,
     anthropic_error_body,
     anthropic_request_to_openai,
+    anthropic_sse_error,
     anthropic_sse_ping,
     is_anthropic_messages_path,
 )
@@ -615,6 +616,10 @@ def create_app() -> FastAPI:
         anthropic_client: translate OpenAI upstream bytes → Anthropic Messages
         for the client; metering still parses the OpenAI buffer.
         anthropic_stream: client asked for SSE (prefer event-stream CT).
+
+        Anthropic SSE: return HTTP 200 + event-stream **before** waiting on
+        upstream headers, and emit pings while llama.cpp is still connecting /
+        queueing — otherwise Claude Code idle-aborts (multi-minute retry).
         """
         import asyncio
         import time as time_mod
@@ -655,6 +660,227 @@ def create_app() -> FastAPI:
             client_timeout = httpx.Timeout(hold_sec, connect=10.0)
         else:
             client_timeout = httpx.Timeout(3600.0, connect=10.0)
+
+        early_anthropic_sse = bool(anthropic_client and anthropic_stream)
+
+        def _finalize(
+            *,
+            buf: bytes,
+            upstream_status: int,
+            content_type: str | None,
+        ) -> None:
+            # Called from async finally via sync DB — keep sync like before.
+            if usage_id is None or SessionLocal is None:
+                return
+            duration_ms = (time_mod.perf_counter() - t0) * 1000.0
+            avg_w, wh = watt_hours_from_samples(
+                samples=samples,
+                duration_sec=max(0.001, duration_ms / 1000.0),
+            )
+            status = "metered" if samples else power_status
+            metrics = parse_upstream_metrics(
+                buf,
+                duration_ms=duration_ms,
+                content_type=content_type,
+            )
+            db = SessionLocal()
+            try:
+                finalize_usage_metering(
+                    db,
+                    usage_id,
+                    duration_ms=duration_ms,
+                    watts=avg_w,
+                    watt_hours=wh,
+                    upstream_status=upstream_status,
+                    power_status=status,
+                    tokens_in=metrics.tokens_in,
+                    tokens_out=metrics.tokens_out,
+                    pp_tok_s=metrics.pp_tok_s,
+                    tg_tok_s=metrics.tg_tok_s,
+                )
+            finally:
+                db.close()
+
+        if early_anthropic_sse:
+            sse_headers = {
+                "content-type": "text/event-stream",
+                "cache-control": "no-cache",
+                "x-accel-buffering": "no",
+            }
+
+            async def _stream_early():
+                client = httpx.AsyncClient(timeout=client_timeout)
+                upstream = None
+                upstream_status = 502
+                content_type: str | None = None
+                buf = bytearray()
+                truncated = False
+                watchdog: asyncio.Task | None = None
+                pending: asyncio.Task | None = None
+                send_task: asyncio.Task | None = None
+                xform = OpenAIToAnthropicStream(model=anthropic_model)
+                last_sample = time_mod.perf_counter()
+
+                def _meter_chunk(chunk: bytes) -> None:
+                    nonlocal truncated
+                    if not truncated:
+                        if len(buf) + len(chunk) <= _BUF_MAX:
+                            buf.extend(chunk)
+                        else:
+                            buf.extend(chunk)
+                            if len(buf) > _BUF_TAIL:
+                                del buf[: len(buf) - _BUF_TAIL]
+                                truncated = True
+                    else:
+                        buf.extend(chunk)
+                        if len(buf) > _BUF_TAIL:
+                            del buf[: len(buf) - _BUF_TAIL]
+
+                try:
+                    for piece in xform.bootstrap():
+                        yield piece
+                    yield anthropic_sse_ping()
+
+                    send_task = asyncio.create_task(
+                        client.send(
+                            client.build_request(
+                                method, url, headers=headers, content=body
+                            ),
+                            stream=True,
+                        )
+                    )
+                    # Ping while waiting for upstream response headers (queue / load).
+                    while not send_task.done():
+                        done, _ = await asyncio.wait(
+                            {send_task},
+                            timeout=ANTHROPIC_SSE_PING_INTERVAL_SEC,
+                        )
+                        if not done:
+                            yield anthropic_sse_ping()
+                            now = time_mod.perf_counter()
+                            if probe and (now - last_sample) >= 1.0:
+                                await _sample()
+                                last_sample = now
+
+                    try:
+                        upstream = send_task.result()
+                    except Exception as exc:
+                        yield anthropic_sse_error(
+                            f"upstream_unreachable: {exc}", err_type="api_error"
+                        )
+                        for piece in xform.flush():
+                            yield piece
+                        return
+
+                    upstream_status = upstream.status_code
+                    content_type = upstream.headers.get("content-type")
+
+                    if upstream_status >= 400:
+                        err_raw = b""
+                        with suppress(Exception):
+                            err_raw = await upstream.aread()
+                        _meter_chunk(err_raw)
+                        msg = f"upstream_status_{upstream_status}"
+                        with suppress(Exception):
+                            import json as _json
+
+                            obj = _json.loads(err_raw.decode("utf-8", errors="replace"))
+                            if isinstance(obj, dict):
+                                err = obj.get("error")
+                                if isinstance(err, dict) and err.get("message"):
+                                    msg = str(err["message"])
+                                elif isinstance(err, str) and err.strip():
+                                    msg = err.strip()
+                                elif obj.get("detail"):
+                                    msg = str(obj["detail"])
+                        yield anthropic_sse_error(msg, err_type="api_error")
+                        for piece in xform.flush():
+                            yield piece
+                        return
+
+                    if hold_sec > 0:
+
+                        async def _kill_after_hold() -> None:
+                            await asyncio.sleep(hold_sec)
+                            with suppress(Exception):
+                                await upstream.aclose()
+
+                        watchdog = asyncio.create_task(_kill_after_hold())
+
+                    aiter = upstream.aiter_raw().__aiter__()
+                    while True:
+                        if pending is None:
+                            pending = asyncio.ensure_future(aiter.__anext__())
+                        done, _ = await asyncio.wait(
+                            {pending},
+                            timeout=ANTHROPIC_SSE_PING_INTERVAL_SEC,
+                        )
+                        if not done:
+                            yield anthropic_sse_ping()
+                            now = time_mod.perf_counter()
+                            if probe and (now - last_sample) >= 1.0:
+                                await _sample()
+                                last_sample = now
+                            continue
+                        try:
+                            chunk = pending.result()
+                        except StopAsyncIteration:
+                            pending = None
+                            break
+                        pending = None
+                        now = time_mod.perf_counter()
+                        if probe and (now - last_sample) >= 1.0:
+                            await _sample()
+                            last_sample = now
+                        _meter_chunk(chunk)
+                        for piece in xform.feed(chunk):
+                            yield piece
+                    for piece in xform.flush():
+                        yield piece
+                except Exception:
+                    with suppress(Exception):
+                        for piece in xform.flush():
+                            yield piece
+                    raise
+                finally:
+                    if send_task is not None:
+                        if not send_task.done():
+                            send_task.cancel()
+                            with suppress(asyncio.CancelledError):
+                                await send_task
+                        elif upstream is None:
+                            # Client disconnect during header wait: Response orphaned.
+                            with suppress(Exception):
+                                orphan = send_task.result()
+                                await orphan.aclose()
+                    if pending is not None and not pending.done():
+                        pending.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await pending
+                    if watchdog is not None:
+                        watchdog.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await watchdog
+                    if upstream is not None:
+                        with suppress(Exception):
+                            await upstream.aclose()
+                    with suppress(Exception):
+                        await client.aclose()
+                    release_concurrency_lease(concurrency_lease)
+                    await _sample()
+                    _finalize(
+                        buf=bytes(buf),
+                        upstream_status=upstream_status,
+                        content_type=content_type,
+                    )
+
+            return StreamingResponse(
+                _stream_early(),
+                status_code=200,
+                headers=sse_headers,
+                media_type="text/event-stream",
+            )
+
         client = httpx.AsyncClient(timeout=client_timeout)
         try:
             upstream = await client.send(
@@ -709,7 +935,6 @@ def create_app() -> FastAPI:
             if use_sse and upstream_status < 400:
                 media_type = "text/event-stream"
                 out_headers["content-type"] = "text/event-stream"
-                # Defeat nginx/Traefik/browser buffering so SSE pings flush.
                 out_headers["cache-control"] = "no-cache"
                 out_headers["x-accel-buffering"] = "no"
             else:
@@ -726,8 +951,6 @@ def create_app() -> FastAPI:
                 if anthropic_client
                 else None
             )
-            # Claude Code aborts when no bytes arrive during long thinking/prefill.
-            # Anthropic sends SSE pings; local llama.cpp often does not — emit them.
             use_pings = bool(
                 xform is not None
                 and media_type
@@ -759,8 +982,6 @@ def create_app() -> FastAPI:
             pending: asyncio.Task | None = None
             try:
                 if use_pings and xform is not None:
-                    # message_start + ping before first upstream byte — Claude Code
-                    # otherwise idle-aborts during long llama.cpp prefill/thinking.
                     for piece in xform.bootstrap():
                         yield piece
                     yield anthropic_sse_ping()
@@ -773,7 +994,6 @@ def create_app() -> FastAPI:
                     )
                     done, _ = await asyncio.wait({pending}, timeout=wait_timeout)
                     if not done:
-                        # Upstream silent (thinking / prefill) — keep Claude Code alive.
                         yield anthropic_sse_ping()
                         now = time_mod.perf_counter()
                         if probe and (now - last_sample) >= 1.0:
@@ -800,7 +1020,6 @@ def create_app() -> FastAPI:
                     for piece in xform.flush():
                         yield piece
             except Exception:
-                # Close Anthropic envelope if we already sent message_start/pings.
                 if xform is not None:
                     with suppress(Exception):
                         for piece in xform.flush():
@@ -819,35 +1038,11 @@ def create_app() -> FastAPI:
                 await client.aclose()
                 release_concurrency_lease(concurrency_lease)
                 await _sample()
-                duration_ms = (time_mod.perf_counter() - t0) * 1000.0
-                if usage_id is not None and SessionLocal is not None:
-                    avg_w, wh = watt_hours_from_samples(
-                        samples=samples,
-                        duration_sec=max(0.001, duration_ms / 1000.0),
-                    )
-                    status = "metered" if samples else power_status
-                    metrics = parse_upstream_metrics(
-                        bytes(buf),
-                        duration_ms=duration_ms,
-                        content_type=content_type,
-                    )
-                    db = SessionLocal()
-                    try:
-                        finalize_usage_metering(
-                            db,
-                            usage_id,
-                            duration_ms=duration_ms,
-                            watts=avg_w,
-                            watt_hours=wh,
-                            upstream_status=upstream_status,
-                            power_status=status,
-                            tokens_in=metrics.tokens_in,
-                            tokens_out=metrics.tokens_out,
-                            pp_tok_s=metrics.pp_tok_s,
-                            tg_tok_s=metrics.tg_tok_s,
-                        )
-                    finally:
-                        db.close()
+                _finalize(
+                    buf=bytes(buf),
+                    upstream_status=upstream_status,
+                    content_type=content_type,
+                )
 
         return StreamingResponse(
             _stream(),
@@ -1070,7 +1265,8 @@ def create_app() -> FastAPI:
                 body = filled
 
         url = f"http://{backend}{rewrite_uri}"
-        if request.url.query:
+        # Claude Code sends ?beta=true on /v1/messages — do not forward to OpenAI/llama.cpp.
+        if request.url.query and not anthropic_client:
             url = f"{url}?{request.url.query}"
         hop = {
             "content-type",

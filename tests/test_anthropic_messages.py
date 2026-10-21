@@ -10,6 +10,7 @@ from app.anthropic_messages import (
     ANTHROPIC_SSE_PING_INTERVAL_SEC,
     OpenAIToAnthropicStream,
     anthropic_request_to_openai,
+    anthropic_sse_error,
     anthropic_sse_ping,
     is_anthropic_messages_path,
     openai_response_to_anthropic,
@@ -38,6 +39,14 @@ def test_anthropic_sse_ping_format():
     assert b'"type": "ping"' in ping
     assert ping.endswith(b"\n\n")
     assert 0 < ANTHROPIC_SSE_PING_INTERVAL_SEC <= 5.0
+
+
+def test_anthropic_sse_error_format():
+    frame = anthropic_sse_error("boom", err_type="api_error")
+    assert frame.startswith(b"event: error\n")
+    assert b'"type": "error"' in frame
+    assert b'"message": "boom"' in frame
+    assert frame.endswith(b"\n\n")
 
 
 def test_stream_bootstrap_emits_message_start_once():
