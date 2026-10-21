@@ -245,7 +245,6 @@ def create_app() -> FastAPI:
             "/privacy/wipe-usage",
             "/healthz",
             "/api/hello",
-            "/api/sse-selftest",
         }
     )
 
@@ -332,52 +331,6 @@ def create_app() -> FastAPI:
     async def api_hello():
         """Claude Code / Anthropic clients probe this path on the API host."""
         return {"ok": True, "service": "onprem-auth"}
-
-    async def _sse_selftest_response(seconds: float = 30.0):
-        """Emit Anthropic-shaped SSE pings for N seconds (no upstream)."""
-        import asyncio
-        import time as time_mod
-
-        from .anthropic_messages import (
-            ANTHROPIC_SSE_PING_INTERVAL_SEC,
-            OpenAIToAnthropicStream,
-            anthropic_sse_ping,
-        )
-
-        dur = max(1.0, min(float(seconds or 30.0), 120.0))
-
-        async def _gen():
-            xform = OpenAIToAnthropicStream(model="sse-selftest")
-            for piece in xform.bootstrap():
-                yield piece
-            yield anthropic_sse_ping()
-            t0 = time_mod.perf_counter()
-            while (time_mod.perf_counter() - t0) < dur:
-                await asyncio.sleep(ANTHROPIC_SSE_PING_INTERVAL_SEC)
-                yield anthropic_sse_ping()
-            for piece in xform.flush():
-                yield piece
-
-        return StreamingResponse(
-            _gen(),
-            status_code=200,
-            media_type="text/event-stream",
-            headers={
-                "cache-control": "no-cache",
-                "x-accel-buffering": "no",
-                "x-onprem-dialect": "anthropic-sse-selftest",
-            },
-        )
-
-    @app.api_route("/api/sse-selftest", methods=["GET", "POST"])
-    async def api_sse_selftest(seconds: float = 30.0):
-        """Traefik → auth (no nginx). Compare with /v1/onprem/sse-selftest."""
-        return await _sse_selftest_response(seconds)
-
-    @app.api_route("/v1/onprem/sse-selftest", methods=["GET", "POST"])
-    async def onprem_sse_selftest(seconds: float = 30.0):
-        """Same pings via Traefik → nginx → auth (Claude's /v1 path)."""
-        return await _sse_selftest_response(seconds)
 
     @app.get("/v1/models")
     @app.get("/v1/onprem/models")
