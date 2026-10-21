@@ -745,6 +745,9 @@ def create_app() -> FastAPI:
 
             async def _stream_early():
                 nonlocal power_status
+                import logging as _log
+
+                _sse_log = _log.getLogger("uvicorn.error")
                 # Long timeout until prepare fills hold_sec; recreate if needed.
                 client = httpx.AsyncClient(timeout=httpx.Timeout(3600.0, connect=10.0))
                 upstream = None
@@ -877,6 +880,10 @@ def create_app() -> FastAPI:
                             yield piece
                         return
 
+                    _sse_log.info(
+                        "anthropic_sse upstream connect url=%s",
+                        (conn["url"] or "")[:120],
+                    )
                     send_task = asyncio.create_task(
                         client.send(
                             client.build_request(
@@ -895,6 +902,9 @@ def create_app() -> FastAPI:
                     try:
                         upstream = send_task.result()
                     except Exception as exc:
+                        _sse_log.warning(
+                            "anthropic_sse upstream_unreachable: %s", exc
+                        )
                         yield anthropic_sse_error(
                             f"upstream_unreachable: {exc}", err_type="api_error"
                         )
@@ -904,6 +914,11 @@ def create_app() -> FastAPI:
 
                     upstream_status = upstream.status_code
                     content_type = upstream.headers.get("content-type")
+                    _sse_log.info(
+                        "anthropic_sse upstream status=%s ct=%s",
+                        upstream_status,
+                        (content_type or "")[:60],
+                    )
 
                     if upstream_status >= 400:
                         err_raw = b""
@@ -939,6 +954,7 @@ def create_app() -> FastAPI:
                         watchdog = asyncio.create_task(_kill_after_hold())
 
                     aiter = upstream.aiter_raw().__aiter__()
+                    first_up = True
                     while True:
                         if pending is None:
                             pending = asyncio.ensure_future(aiter.__anext__())
@@ -959,6 +975,12 @@ def create_app() -> FastAPI:
                             pending = None
                             break
                         pending = None
+                        if first_up:
+                            first_up = False
+                            _sse_log.info(
+                                "anthropic_sse upstream first_byte bytes=%s",
+                                len(chunk),
+                            )
                         now = time_mod.perf_counter()
                         if conn["probe"] and (now - last_sample) >= 1.0:
                             await _sample()
@@ -968,7 +990,14 @@ def create_app() -> FastAPI:
                             yield piece
                     for piece in xform.flush():
                         yield piece
+                    _sse_log.info(
+                        "anthropic_sse stream done status=%s", upstream_status
+                    )
+                except (asyncio.CancelledError, GeneratorExit):
+                    _sse_log.warning("anthropic_sse client_disconnect")
+                    raise
                 except Exception:
+                    _sse_log.exception("anthropic_sse stream_error")
                     with suppress(Exception):
                         for piece in xform.flush():
                             yield piece
