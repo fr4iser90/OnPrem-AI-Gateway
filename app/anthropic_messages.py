@@ -44,13 +44,15 @@ def anthropic_error_body(message: str, *, err_type: str = "api_error") -> dict[s
 ANTHROPIC_SSE_PING = b'event: ping\ndata: {"type": "ping"}\n\n'
 # SSE comment lines are ignored by the event parser but still count as wire
 # bytes for Claude Code's byte-level idle watchdog (gateway / custom base URL).
-ANTHROPIC_SSE_COMMENT_PING = b": keepalive\n\n"
+# Pad to ~4KiB so nginx/Traefik/HTTP2 intermediaries flush instead of coalescing
+# tiny chunks — Claude Code banners after ~20s with zero delivered bytes.
+ANTHROPIC_SSE_COMMENT_PING = b": " + (b"." * 4096) + b"\n\n"
 # Claude Code shows "Waiting for API response" after ~20s wire silence.
-ANTHROPIC_SSE_PING_INTERVAL_SEC = 1.0
+ANTHROPIC_SSE_PING_INTERVAL_SEC = 0.75
 
 
 def anthropic_sse_ping() -> bytes:
-    """Keepalive: SSE comment bytes + Anthropic ``event: ping`` frame."""
+    """Keepalive: padded SSE comment bytes + Anthropic ``event: ping`` frame."""
     return ANTHROPIC_SSE_COMMENT_PING + ANTHROPIC_SSE_PING
 
 

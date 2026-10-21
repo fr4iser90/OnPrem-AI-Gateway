@@ -421,7 +421,8 @@ def test_anthropic_sse_still_requires_auth(sec, monkeypatch):
     assert "text/event-stream" in (resp.headers.get("content-type") or "")
     body = resp.content
     assert b"event: error" in body
-    assert b"message_start" in body or b"keepalive" in body or b"ping" in body
+    assert b"message_start" in body
+    assert b"event: ping" in body or b"event: error" in body
     assert sends == []
 
 

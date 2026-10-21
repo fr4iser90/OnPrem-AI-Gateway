@@ -1285,11 +1285,18 @@ def create_app() -> FastAPI:
             ct = content_type or "application/json"
             early_model = anthropic_model
 
-            async def _prepare_auth_and_route() -> dict | str:
-                """authorize + route + gates. Returns conn dict or error string."""
+            def _prepare_auth_and_route_sync() -> dict | str:
+                """Sync authorize+route+gates — runs in a worker thread.
+
+                Must not touch the event loop: Claude Code idle-aborts if SSE
+                pings stop while sync DB/auth/admission blocks the loop.
+                """
+                import logging
+
                 from .data.db import SessionLocal as _SL
                 from .usage_pool import probe_url_for_source
 
+                log = logging.getLogger("uvicorn.error")
                 if _SL is None:
                     return "db_unavailable"
                 db2 = _SL()
@@ -1370,6 +1377,10 @@ def create_app() -> FastAPI:
                     if result.status != 204:
                         release_concurrency_lease(result.concurrency_lease)
                         lease_hold = None
+                        log.info(
+                            "anthropic_sse prepare auth_fail reason=%s",
+                            (result.reason or "unauthorized")[:80],
+                        )
                         return str(result.reason or "unauthorized")
 
                     backend = address_for_source(db2, service)
@@ -1382,7 +1393,8 @@ def create_app() -> FastAPI:
                     entry_lease = _attach_source_key(result.concurrency_lease, backend)
                     lease_hold = entry_lease
 
-                    pf_block = await _preflight_block_async(
+                    # Sync gates (may wait up to source_queue_timeout) — OK in thread.
+                    pf_block = _preflight_block(
                         auth_cfg=auth_cfg,
                         backend=backend,
                         kind=kind,
@@ -1406,14 +1418,14 @@ def create_app() -> FastAPI:
                             data = {}
                         if not isinstance(data, dict):
                             data = {}
-                        lease_hold = None  # preflight already released on fail
+                        lease_hold = None
                         return str(
                             data.get("error")
                             or data.get("detail")
                             or "preflight_failed"
                         )
 
-                    adm_block = await _source_admission_block_async(
+                    adm_block = _source_admission_block(
                         auth_cfg=auth_cfg,
                         src=src_row,
                         backend=backend,
@@ -1494,6 +1506,12 @@ def create_app() -> FastAPI:
                     up_headers["content-type"] = ct
                     up_headers["content-length"] = str(len(work_body))
                     lease_hold = None  # ownership transfers to stream finally
+                    out_model = early_model or final_model or result.model
+                    log.info(
+                        "anthropic_sse prepare ok service=%s model=%s",
+                        service,
+                        (out_model or "")[:80],
+                    )
                     return {
                         "url": up_url,
                         "headers": up_headers,
@@ -1504,21 +1522,22 @@ def create_app() -> FastAPI:
                         "max_hold_sec": int(
                             getattr(auth_cfg, "source_admission_max_hold_sec", 0) or 0
                         ),
-                        "anthropic_model": early_model
-                        or final_model
-                        or result.model,
+                        "anthropic_model": out_model,
                     }
                 except Exception:
-                    import logging
+                    import logging as _logging
 
-                    logging.getLogger("uvicorn.error").exception(
+                    _logging.getLogger("uvicorn.error").exception(
                         "anthropic_sse prepare auth_setup_failed"
                     )
                     return "auth_setup_failed"
                 finally:
-                    # Only releases if prepare failed before handing lease to stream.
                     release_concurrency_lease(lease_hold)
                     db2.close()
+
+            async def _prepare_auth_and_route() -> dict | str:
+                # Off the event loop so SSE pings keep flushing during auth/queue.
+                return await asyncio.to_thread(_prepare_auth_and_route_sync)
 
             return await _stream_upstream_metered(
                 method=method,

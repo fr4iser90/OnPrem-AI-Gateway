@@ -35,10 +35,12 @@ def test_is_anthropic_messages_path(path: str, expected: bool):
 
 def test_anthropic_sse_ping_format():
     ping = anthropic_sse_ping()
-    assert b": keepalive\n\n" in ping
+    assert ping.startswith(b": ")
     assert b"event: ping\n" in ping
     assert b'"type": "ping"' in ping
     assert ping.endswith(b"\n\n")
+    # Padded comments defeat intermediary coalescing (must be >> 1KiB).
+    assert len(ping) >= 4096
     assert 0 < ANTHROPIC_SSE_PING_INTERVAL_SEC <= 2.0
 
 

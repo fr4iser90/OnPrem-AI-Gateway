@@ -64,6 +64,8 @@ services:
       - traefik.enable=true
       - traefik.docker.network=proxy
       - traefik.http.routers.onprem-api.rule=Host(`${PUBLIC_SUBDOMAIN:-ai}.${DOMAIN}`) && PathPrefix(`/v1`)
+      # Beat the catch-all onprem-admin Host rule so /v1 always hits nginx (SSE flush).
+      - traefik.http.routers.onprem-api.priority=100
       - traefik.http.routers.onprem-api.entrypoints=websecure
       - traefik.http.routers.onprem-api.tls=true
       - traefik.http.routers.onprem-api.tls.certresolver=http_resolver
@@ -72,6 +74,7 @@ services:
       # Path stays: Traefik → nginx (this service) → onprem-auth. Does NOT bypass nginx.
       - traefik.http.services.onprem-api.loadbalancer.responseforwarding.flushinterval=1ms
       - traefik.http.routers.onprem-api-http.rule=Host(`${PUBLIC_SUBDOMAIN:-ai}.${DOMAIN}`) && PathPrefix(`/v1`)
+      - traefik.http.routers.onprem-api-http.priority=100
       - traefik.http.routers.onprem-api-http.entrypoints=web
       - traefik.http.routers.onprem-api-http.middlewares=onprem-https-redirect
 
