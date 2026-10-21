@@ -181,8 +181,33 @@ def onprem_api_port(explicit: str | None = None) -> str:
     return (os.getenv("ONPREM_API_PORT") or "").strip() or DEFAULT_API_PORT
 
 
-def public_api_base(*, api_port: str | None = None) -> str:
-    """Client-facing OpenAI-compatible base (…/v1), no trailing slash after v1."""
+def _origin_to_v1(origin: str) -> str:
+    o = (origin or "").strip().rstrip("/")
+    if not o:
+        return ""
+    if o.endswith("/v1"):
+        return o
+    return f"{o}/v1"
+
+
+def is_loopback_api_base(url: str | None) -> bool:
+    """True when the client-facing API base is still the local compose default."""
+    u = (url or "").strip().lower()
+    return u.startswith("http://localhost:") or u.startswith("http://127.0.0.1:")
+
+
+def public_api_base(
+    *,
+    api_port: str | None = None,
+    fallback_origin: str | None = None,
+) -> str:
+    """Client-facing OpenAI-compatible base (…/v1), no trailing slash after v1.
+
+    Prefer ``PUBLIC_HOST`` / ``settings.public_host``. When unset (local compose
+    default), ``fallback_origin`` may supply the public site origin
+    (SMTP ``public_base_url`` or the browser Host) so key-creation UI does not
+    show localhost behind Traefik.
+    """
     import os
 
     settings = get_settings()
@@ -190,8 +215,11 @@ def public_api_base(*, api_port: str | None = None) -> str:
     if host and host != "_":
         host = host.split("/")[0].strip()
         if host.startswith("http://") or host.startswith("https://"):
-            return f"{host.rstrip('/')}/v1"
+            return _origin_to_v1(host)
         # Homelab public names are almost always TLS via reverse proxy
         return f"https://{host}/v1"
+    fb = _origin_to_v1(fallback_origin or "")
+    if fb:
+        return fb
     port = onprem_api_port(api_port)
     return f"http://localhost:{port}/v1"

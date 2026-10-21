@@ -2,7 +2,7 @@
 
 Clients may POST /v1/messages (Anthropic shape). The gateway translates to
 OpenAI for local backends, meters on the OpenAI response, then translates back.
-Tools / tool_use are out of scope for MVP.
+Supports text, images, tools / tool_use / tool_result, and streaming.
 """
 
 from __future__ import annotations
@@ -38,6 +38,10 @@ def anthropic_error_body(message: str, *, err_type: str = "api_error") -> dict[s
 
 def _msg_id() -> str:
     return f"msg_{uuid.uuid4().hex}"
+
+
+def _tool_call_id() -> str:
+    return f"call_{uuid.uuid4().hex[:24]}"
 
 
 def _finish_to_stop_reason(finish: str | None) -> str:
@@ -94,22 +98,99 @@ def _anthropic_image_to_openai(block: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def _content_to_openai(content: Any) -> Any:
+def _tool_result_content_to_str(content: Any) -> str:
     if content is None:
         return ""
     if isinstance(content, str):
         return content
+    if isinstance(content, (dict, list)):
+        try:
+            return json.dumps(content, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(content)
+    return str(content)
+
+
+def _anthropic_tools_to_openai(tools: Any) -> list[dict[str, Any]]:
+    if not isinstance(tools, list):
+        raise AnthropicTranslateError("tools must be an array")
+    out: list[dict[str, Any]] = []
+    for i, tool in enumerate(tools):
+        if not isinstance(tool, dict):
+            raise AnthropicTranslateError(f"tools[{i}] must be an object")
+        # Already OpenAI-shaped
+        if str(tool.get("type") or "").lower() == "function" and isinstance(
+            tool.get("function"), dict
+        ):
+            out.append(tool)
+            continue
+        name = tool.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise AnthropicTranslateError(f"tools[{i}].name is required")
+        desc = tool.get("description")
+        schema = tool.get("input_schema")
+        if schema is None:
+            schema = tool.get("parameters") or {"type": "object", "properties": {}}
+        if not isinstance(schema, dict):
+            raise AnthropicTranslateError(f"tools[{i}].input_schema must be an object")
+        fn: dict[str, Any] = {
+            "name": name.strip(),
+            "parameters": schema,
+        }
+        if isinstance(desc, str) and desc:
+            fn["description"] = desc
+        out.append({"type": "function", "function": fn})
+    return out
+
+
+def _anthropic_tool_choice_to_openai(choice: Any) -> Any:
+    if choice is None:
+        return None
+    if isinstance(choice, str):
+        c = choice.strip().lower()
+        if c in {"auto", "none", "required"}:
+            return c
+        if c == "any":
+            return "required"
+        raise AnthropicTranslateError(f"unsupported tool_choice string '{choice}'")
+    if not isinstance(choice, dict):
+        raise AnthropicTranslateError("tool_choice must be a string or object")
+    ct = str(choice.get("type") or "").strip().lower()
+    if ct == "auto":
+        return "auto"
+    if ct == "any":
+        return "required"
+    if ct == "none":
+        return "none"
+    if ct == "tool":
+        name = choice.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise AnthropicTranslateError("tool_choice.type=tool requires name")
+        return {"type": "function", "function": {"name": name.strip()}}
+    raise AnthropicTranslateError(f"unsupported tool_choice.type '{ct}'")
+
+
+def _message_to_openai_messages(role: str, content: Any) -> list[dict[str, Any]]:
+    """Expand one Anthropic message into one or more OpenAI chat messages."""
+    if content is None:
+        return [{"role": role, "content": ""}]
+    if isinstance(content, str):
+        return [{"role": role, "content": content}]
     if isinstance(content, dict):
         content = [content]
     if not isinstance(content, list):
-        return str(content)
-    parts: list[Any] = []
+        return [{"role": role, "content": str(content)}]
+
+    text_parts: list[Any] = []
     text_only: list[str] = []
-    has_non_text = False
+    has_media = False
+    tool_calls: list[dict[str, Any]] = []
+    tool_results: list[dict[str, Any]] = []
+
     for block in content:
         if isinstance(block, str):
             text_only.append(block)
-            parts.append({"type": "text", "text": block})
+            text_parts.append({"type": "text", "text": block})
             continue
         if not isinstance(block, dict):
             continue
@@ -118,25 +199,87 @@ def _content_to_openai(content: Any) -> Any:
             tx = block.get("text")
             if isinstance(tx, str):
                 text_only.append(tx)
-                parts.append({"type": "text", "text": tx})
+                text_parts.append({"type": "text", "text": tx})
         elif bt == "image":
-            has_non_text = True
+            has_media = True
             img = _anthropic_image_to_openai(block)
             if img is not None:
-                parts.append(img)
-        elif bt in {"tool_use", "tool_result", "thinking", "redacted_thinking"}:
-            raise AnthropicTranslateError(
-                f"content block type '{bt}' is not supported yet",
-                err_type="invalid_request_error",
+                text_parts.append(img)
+        elif bt == "tool_use":
+            tid = block.get("id")
+            name = block.get("name")
+            if not isinstance(name, str) or not name.strip():
+                raise AnthropicTranslateError("tool_use.name is required")
+            if not isinstance(tid, str) or not tid.strip():
+                tid = _tool_call_id()
+            inp = block.get("input")
+            if inp is None:
+                args = "{}"
+            elif isinstance(inp, str):
+                args = inp
+            else:
+                try:
+                    args = json.dumps(inp, ensure_ascii=False)
+                except (TypeError, ValueError) as exc:
+                    raise AnthropicTranslateError(
+                        "tool_use.input must be JSON-serializable"
+                    ) from exc
+            tool_calls.append(
+                {
+                    "id": tid.strip(),
+                    "type": "function",
+                    "function": {"name": name.strip(), "arguments": args},
+                }
             )
+        elif bt == "tool_result":
+            tid = block.get("tool_use_id")
+            if not isinstance(tid, str) or not tid.strip():
+                raise AnthropicTranslateError("tool_result.tool_use_id is required")
+            tool_results.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tid.strip(),
+                    "content": _tool_result_content_to_str(block.get("content")),
+                }
+            )
+        elif bt in {"thinking", "redacted_thinking"}:
+            # Drop thinking blocks from history (OpenAI upstreams ignore them).
+            continue
         else:
             tx = block.get("text")
             if isinstance(tx, str):
                 text_only.append(tx)
-                parts.append({"type": "text", "text": tx})
-    if not has_non_text:
-        return "".join(text_only)
-    return parts if parts else ""
+                text_parts.append({"type": "text", "text": tx})
+
+    out: list[dict[str, Any]] = []
+
+    if role == "assistant":
+        msg: dict[str, Any] = {"role": "assistant"}
+        if has_media:
+            msg["content"] = text_parts if text_parts else None
+        elif text_only:
+            msg["content"] = "".join(text_only)
+        else:
+            msg["content"] = None if tool_calls else ""
+        if tool_calls:
+            msg["tool_calls"] = tool_calls
+            if msg.get("content") == "":
+                msg["content"] = None
+        out.append(msg)
+        return out
+
+    # user (or other): tool_results become separate role=tool messages
+    if tool_results:
+        out.extend(tool_results)
+    if text_parts or text_only or has_media:
+        if has_media:
+            body: Any = text_parts if text_parts else ""
+        else:
+            body = "".join(text_only)
+        out.append({"role": role, "content": body})
+    elif not tool_results:
+        out.append({"role": role, "content": ""})
+    return out
 
 
 def anthropic_request_to_openai(body: bytes) -> tuple[bytes, bool]:
@@ -150,12 +293,6 @@ def anthropic_request_to_openai(body: bytes) -> tuple[bytes, bool]:
         raise AnthropicTranslateError(f"invalid JSON body: {exc}") from exc
     if not isinstance(data, dict):
         raise AnthropicTranslateError("request body must be a JSON object")
-
-    if data.get("tools") is not None or data.get("tool_choice") is not None:
-        raise AnthropicTranslateError(
-            "tools / tool_choice are not supported on this gateway yet",
-            err_type="invalid_request_error",
-        )
 
     model = data.get("model")
     if not isinstance(model, str) or not model.strip():
@@ -179,9 +316,7 @@ def anthropic_request_to_openai(body: bytes) -> tuple[bytes, bool]:
                 f"unsupported message role '{role}' "
                 "(use user/assistant; system is top-level)"
             )
-        out_messages.append(
-            {"role": role, "content": _content_to_openai(msg.get("content"))}
-        )
+        out_messages.extend(_message_to_openai_messages(role, msg.get("content")))
 
     max_tokens = data.get("max_tokens")
     if max_tokens is None:
@@ -209,11 +344,66 @@ def anthropic_request_to_openai(body: bytes) -> tuple[bytes, bool]:
     stops = data.get("stop_sequences")
     if isinstance(stops, list) and stops:
         openai["stop"] = stops
+
+    tools = data.get("tools")
+    if tools is not None:
+        openai["tools"] = _anthropic_tools_to_openai(tools)
+    if "tool_choice" in data and data["tool_choice"] is not None:
+        openai["tool_choice"] = _anthropic_tool_choice_to_openai(data["tool_choice"])
+
     if stream:
         # Ask OpenAI-shaped upstreams for usage on the final chunk when supported.
         openai["stream_options"] = {"include_usage": True}
 
     return json.dumps(openai, ensure_ascii=False).encode("utf-8"), stream
+
+
+def _parse_tool_arguments(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"_raw": raw}
+    return parsed if isinstance(parsed, dict) else {"_raw": parsed}
+
+
+def _openai_message_content_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    content = message.get("content")
+    if isinstance(content, str) and content:
+        blocks.append({"type": "text", "text": content})
+    elif isinstance(content, list):
+        bits: list[str] = []
+        for p in content:
+            if isinstance(p, dict) and isinstance(p.get("text"), str):
+                bits.append(p["text"])
+            elif isinstance(p, str):
+                bits.append(p)
+        if bits:
+            blocks.append({"type": "text", "text": "".join(bits)})
+
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+            name = fn.get("name") if isinstance(fn.get("name"), str) else ""
+            tid = tc.get("id")
+            if not isinstance(tid, str) or not tid.strip():
+                tid = _tool_call_id()
+            blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": tid.strip(),
+                    "name": name or "tool",
+                    "input": _parse_tool_arguments(fn.get("arguments")),
+                }
+            )
+    return blocks
 
 
 def openai_response_to_anthropic(
@@ -255,34 +445,25 @@ def openai_response_to_anthropic(
         return body
     choice0 = choices[0] if isinstance(choices[0], dict) else {}
     message = choice0.get("message") if isinstance(choice0.get("message"), dict) else {}
-    content = message.get("content")
-    if content is None:
-        text = ""
-    elif isinstance(content, str):
-        text = content
-    elif isinstance(content, list):
-        bits: list[str] = []
-        for p in content:
-            if isinstance(p, dict) and isinstance(p.get("text"), str):
-                bits.append(p["text"])
-            elif isinstance(p, str):
-                bits.append(p)
-        text = "".join(bits)
-    else:
-        text = str(content)
+    blocks = _openai_message_content_blocks(message)
+    if not blocks:
+        blocks = [{"type": "text", "text": ""}]
 
     usage_in = data.get("usage") if isinstance(data.get("usage"), dict) else {}
     mid = data.get("id")
     if not isinstance(mid, str) or not mid.startswith("msg_"):
         mid = _msg_id()
     out_model = model or data.get("model") or ""
+    stop = _finish_to_stop_reason(choice0.get("finish_reason"))
+    if any(b.get("type") == "tool_use" for b in blocks) and stop == "end_turn":
+        stop = "tool_use"
     out = {
         "id": mid,
         "type": "message",
         "role": "assistant",
-        "content": [{"type": "text", "text": text}],
+        "content": blocks,
         "model": out_model,
-        "stop_reason": _finish_to_stop_reason(choice0.get("finish_reason")),
+        "stop_reason": stop,
         "stop_sequence": None,
         "usage": {
             "input_tokens": int(usage_in.get("prompt_tokens") or 0),
@@ -307,7 +488,12 @@ class OpenAIToAnthropicStream:
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._buf = ""
         self._started = False
-        self._block_open = False
+        self._text_index: int | None = None
+        self._text_open = False
+        self._next_block_index = 0
+        # OpenAI tool_call index → Anthropic content block index
+        self._tool_index_map: dict[int, int] = {}
+        self._tool_open: set[int] = set()
         self._msg_id = _msg_id()
         self._input_tokens = 0
         self._output_tokens = 0
@@ -391,11 +577,11 @@ class OpenAIToAnthropicStream:
             )
         )
 
-    def _ensure_started(self) -> list[bytes]:
+    def _ensure_message_start(self) -> list[bytes]:
         if self._started:
             return []
         self._started = True
-        events = [
+        return [
             self._emit(
                 "message_start",
                 {
@@ -411,18 +597,40 @@ class OpenAIToAnthropicStream:
                         "usage": {"input_tokens": 0, "output_tokens": 0},
                     },
                 },
-            ),
+            )
+        ]
+
+    def _ensure_text_block(self) -> list[bytes]:
+        out = self._ensure_message_start()
+        if self._text_open:
+            return out
+        idx = self._next_block_index
+        self._next_block_index += 1
+        self._text_index = idx
+        self._text_open = True
+        out.append(
             self._emit(
                 "content_block_start",
                 {
                     "type": "content_block_start",
-                    "index": 0,
+                    "index": idx,
                     "content_block": {"type": "text", "text": ""},
                 },
-            ),
+            )
+        )
+        return out
+
+    def _close_text_block(self) -> list[bytes]:
+        if not self._text_open or self._text_index is None:
+            return []
+        idx = self._text_index
+        self._text_open = False
+        return [
+            self._emit(
+                "content_block_stop",
+                {"type": "content_block_stop", "index": idx},
+            )
         ]
-        self._block_open = True
-        return events
 
     def _handle_chunk(self, obj: dict[str, Any]) -> list[bytes]:
         out: list[bytes] = []
@@ -451,31 +659,117 @@ class OpenAIToAnthropicStream:
 
         delta = choice0.get("delta") if isinstance(choice0.get("delta"), dict) else {}
         if not delta and isinstance(choice0.get("message"), dict):
-            content = choice0["message"].get("content")
+            # Non-incremental full message in a chunk
+            msg = choice0["message"]
+            content = msg.get("content")
             if isinstance(content, str) and content:
-                out.extend(self._ensure_started())
+                out.extend(self._ensure_text_block())
                 out.append(
                     self._emit(
                         "content_block_delta",
                         {
                             "type": "content_block_delta",
-                            "index": 0,
+                            "index": self._text_index,
                             "delta": {"type": "text_delta", "text": content},
                         },
                     )
                 )
+            tcs = msg.get("tool_calls")
+            if isinstance(tcs, list):
+                for i, tc in enumerate(tcs):
+                    if isinstance(tc, dict):
+                        out.extend(self._handle_tool_call_delta(i, tc))
             return out
 
         text = delta.get("content")
         if isinstance(text, str) and text:
-            out.extend(self._ensure_started())
+            out.extend(self._ensure_text_block())
             out.append(
                 self._emit(
                     "content_block_delta",
                     {
                         "type": "content_block_delta",
-                        "index": 0,
+                        "index": self._text_index,
                         "delta": {"type": "text_delta", "text": text},
+                    },
+                )
+            )
+
+        tool_deltas = delta.get("tool_calls")
+        if isinstance(tool_deltas, list):
+            for td in tool_deltas:
+                if not isinstance(td, dict):
+                    continue
+                try:
+                    idx = int(td.get("index", 0))
+                except (TypeError, ValueError):
+                    idx = 0
+                out.extend(self._handle_tool_call_delta(idx, td))
+        return out
+
+    def _handle_tool_call_delta(self, openai_index: int, td: dict[str, Any]) -> list[bytes]:
+        out: list[bytes] = []
+        out.extend(self._ensure_message_start())
+        # Close text before first tool block
+        if openai_index not in self._tool_index_map and self._text_open:
+            out.extend(self._close_text_block())
+
+        if openai_index not in self._tool_index_map:
+            aidx = self._next_block_index
+            self._next_block_index += 1
+            self._tool_index_map[openai_index] = aidx
+            tid = td.get("id")
+            if not isinstance(tid, str) or not tid.strip():
+                tid = _tool_call_id()
+            fn = td.get("function") if isinstance(td.get("function"), dict) else {}
+            name = fn.get("name") if isinstance(fn.get("name"), str) else ""
+            out.append(
+                self._emit(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": aidx,
+                        "content_block": {
+                            "type": "tool_use",
+                            "id": tid.strip(),
+                            "name": name or "tool",
+                            "input": {},
+                        },
+                    },
+                )
+            )
+            self._tool_open.add(aidx)
+            # Name may arrive on a later delta — patch via input only; name is set at start.
+            # If name was empty and arrives later, emit nothing (Anthropic requires name at start).
+            args = fn.get("arguments")
+            if isinstance(args, str) and args:
+                out.append(
+                    self._emit(
+                        "content_block_delta",
+                        {
+                            "type": "content_block_delta",
+                            "index": aidx,
+                            "delta": {
+                                "type": "input_json_delta",
+                                "partial_json": args,
+                            },
+                        },
+                    )
+                )
+            return out
+
+        aidx = self._tool_index_map[openai_index]
+        fn = td.get("function") if isinstance(td.get("function"), dict) else {}
+        # Late name with empty start: rare; ignore if already started.
+        args = fn.get("arguments")
+        if isinstance(args, str) and args:
+            out.append(
+                self._emit(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": aidx,
+                        "delta": {"type": "input_json_delta", "partial_json": args},
                     },
                 )
             )
@@ -484,15 +778,18 @@ class OpenAIToAnthropicStream:
     def _close_events(self) -> list[bytes]:
         out: list[bytes] = []
         if not self._started:
-            out.extend(self._ensure_started())
-        if self._block_open:
+            out.extend(self._ensure_message_start())
+            # Empty completion: emit an empty text block for a valid Anthropic message.
+            out.extend(self._ensure_text_block())
+        out.extend(self._close_text_block())
+        for aidx in sorted(self._tool_open):
             out.append(
                 self._emit(
                     "content_block_stop",
-                    {"type": "content_block_stop", "index": 0},
+                    {"type": "content_block_stop", "index": aidx},
                 )
             )
-            self._block_open = False
+        self._tool_open.clear()
         usage_delta: dict[str, int] = {"output_tokens": self._output_tokens}
         if self._input_tokens:
             usage_delta["input_tokens"] = self._input_tokens

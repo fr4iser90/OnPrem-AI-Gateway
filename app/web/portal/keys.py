@@ -86,7 +86,7 @@ def keys_list(
     user: Annotated[WebUser, Depends(require_user)],
     owner_user_id: int | None = None,
 ):
-    from ...config import public_api_base
+    from ..shared import api_base_for_ui
 
     teams_on = _teams_on(db)
     q = db.query(ApiKey).options(
@@ -159,7 +159,7 @@ def keys_list(
             "flash_key_services": request.session.pop("flash_key_services", None),
             "flash_ok": request.session.pop("flash_ok", None),
             "flash_err": request.session.pop("flash_err", None),
-            "api_base": public_api_base(),
+            "api_base": api_base_for_ui(request, db),
             "active_count": active_count,
             "usage_24h": usage_24h,
             "last_used": last_used,

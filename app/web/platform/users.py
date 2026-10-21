@@ -509,7 +509,6 @@ async def users_create(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[WebUser, Depends(require_platform_admin)],
 ):
-    from ...config import public_api_base
     from ...data.grants import sync_user_grants, sync_user_models
     from ...mailer import MailError, get_smtp, send_mail, smtp_ready
     from ..accounts import (
@@ -592,9 +591,9 @@ async def users_create(
         else:
             assert cfg is not None
             base = (cfg.public_base_url or str(request.base_url)).rstrip("/")
-            api_base = public_api_base()
-            if api_base.startswith("http://localhost") and base.startswith("https://"):
-                api_base = f"{base}/v1"
+            from ..shared import api_base_for_ui
+
+            api_base = api_base_for_ui(request, db)
             try:
                 send_mail(
                     db,

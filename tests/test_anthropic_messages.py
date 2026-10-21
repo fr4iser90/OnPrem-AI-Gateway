@@ -7,7 +7,6 @@ import json
 import pytest
 
 from app.anthropic_messages import (
-    AnthropicTranslateError,
     OpenAIToAnthropicStream,
     anthropic_request_to_openai,
     is_anthropic_messages_path,
@@ -98,17 +97,115 @@ def test_request_default_max_tokens_and_image():
     assert content[1]["image_url"]["url"].startswith("data:image/png;base64,aaa")
 
 
-def test_request_rejects_tools():
+def test_request_tools_and_tool_choice():
     raw = json.dumps(
         {
             "model": "x",
             "max_tokens": 10,
-            "messages": [{"role": "user", "content": "hi"}],
-            "tools": [{"name": "t"}],
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": [
+                {
+                    "name": "get_weather",
+                    "description": "Weather lookup",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                        "required": ["city"],
+                    },
+                }
+            ],
+            "tool_choice": {"type": "any"},
         }
     ).encode()
-    with pytest.raises(AnthropicTranslateError, match="tools"):
-        anthropic_request_to_openai(raw)
+    out, _ = anthropic_request_to_openai(raw)
+    data = json.loads(out)
+    assert data["tool_choice"] == "required"
+    assert data["tools"][0]["type"] == "function"
+    assert data["tools"][0]["function"]["name"] == "get_weather"
+    assert data["tools"][0]["function"]["parameters"]["required"] == ["city"]
+
+
+def test_request_tool_use_and_tool_result_history():
+    raw = json.dumps(
+        {
+            "model": "x",
+            "max_tokens": 64,
+            "messages": [
+                {"role": "user", "content": "temp?"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "get_weather",
+                            "input": {"city": "Berlin"},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "content": "12C",
+                        }
+                    ],
+                },
+            ],
+        }
+    ).encode()
+    out, _ = anthropic_request_to_openai(raw)
+    msgs = json.loads(out)["messages"]
+    assert msgs[1]["role"] == "assistant"
+    assert msgs[1]["tool_calls"][0]["id"] == "toolu_1"
+    assert msgs[1]["tool_calls"][0]["function"]["name"] == "get_weather"
+    assert json.loads(msgs[1]["tool_calls"][0]["function"]["arguments"]) == {
+        "city": "Berlin"
+    }
+    assert msgs[2] == {
+        "role": "tool",
+        "tool_call_id": "toolu_1",
+        "content": "12C",
+    }
+
+
+def test_response_tool_calls_to_tool_use():
+    openai = {
+        "id": "chatcmpl-1",
+        "model": "qwen-test",
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_abc",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": '{"city":"Berlin"}',
+                            },
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    }
+    out = json.loads(openai_response_to_anthropic(json.dumps(openai).encode()))
+    assert out["stop_reason"] == "tool_use"
+    assert out["content"] == [
+        {
+            "type": "tool_use",
+            "id": "call_abc",
+            "name": "get_weather",
+            "input": {"city": "Berlin"},
+        }
+    ]
 
 
 def test_response_roundtrip_shape():
@@ -179,3 +276,30 @@ def test_stream_openai_to_anthropic_events():
     assert '"text": "llo"' in joined
     assert "event: message_stop" in joined
     assert "end_turn" in joined
+
+
+def test_stream_tool_calls():
+    xform = OpenAIToAnthropicStream(model="m1")
+    chunks = [
+        (
+            b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1",'
+            b'"type":"function","function":{"name":"get_weather","arguments":""}}]},'
+            b'"finish_reason":null}]}\n\n'
+        ),
+        (
+            b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
+            b'"function":{"arguments":"{\\"city\\":\\"Berlin\\"}"}}]},'
+            b'"finish_reason":null}]}\n\n'
+        ),
+        b'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+    joined = "".join(
+        piece.decode() for c in chunks for piece in xform.feed(c)
+    ) + "".join(piece.decode() for piece in xform.flush())
+    assert "tool_use" in joined
+    assert "get_weather" in joined
+    assert "input_json_delta" in joined
+    assert "Berlin" in joined
+    assert "tool_use" in joined
+    assert '"stop_reason": "tool_use"' in joined

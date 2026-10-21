@@ -6,11 +6,10 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session, joinedload
 
-from ...config import public_api_base
 from ...data.db import get_db
 from ...data.models import WebUser, ApiKey
 from ..session import require_user, scope_keys_query
-from ..shared import templates, _teams_on
+from ..shared import api_base_for_ui, templates, _teams_on
 
 router = APIRouter()
 
@@ -33,10 +32,7 @@ def me_page(
     )
     keys = keys_q.order_by(ApiKey.label).all()
     key_ids = [k.id for k in keys]
-    from ...config import onprem_api_port, public_api_base
-    import os
-
-    api_base = public_api_base()
+    api_base = api_base_for_ui(request, db)
     flash_ok = request.session.pop("flash_ok", None)
     pulse = pulse_stats(db, key_ids=key_ids)
     from datetime import timedelta

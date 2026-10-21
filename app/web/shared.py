@@ -350,3 +350,50 @@ def _teams_on(db: Session) -> bool:
     from .accounts import teams_feature_enabled
 
     return teams_feature_enabled(db)
+
+
+def _browser_public_origin(request: Request) -> str:
+    """https://host from the request when not loopback (Traefik / public UI)."""
+    host = (
+        request.headers.get("x-forwarded-host")
+        or request.headers.get("host")
+        or ""
+    ).split(",")[0].strip()
+    if not host:
+        return ""
+    host_only = host.split(":")[0].strip().lower()
+    if host_only in {"localhost", "127.0.0.1", "::1"} or host_only.endswith(
+        ".localhost"
+    ):
+        return ""
+    proto = (
+        request.headers.get("x-forwarded-proto")
+        or request.url.scheme
+        or "https"
+    ).split(",")[0].strip().lower()
+    if proto not in {"http", "https"}:
+        proto = "https"
+    return f"{proto}://{host}"
+
+
+def api_base_for_ui(request: Request, db: Session | None = None) -> str:
+    """API base shown on keys / me / setup — public domain when hosted that way.
+
+    Order: ``PUBLIC_HOST`` → SMTP ``public_base_url`` → non-loopback request Host
+    → ``http://localhost:{ONPREM_API_PORT}/v1``.
+    """
+    from ..config import is_loopback_api_base, public_api_base
+
+    base = public_api_base()
+    if not is_loopback_api_base(base):
+        return base
+    origin = ""
+    if db is not None:
+        from ..mailer import get_smtp
+
+        cfg = get_smtp(db)
+        if cfg and (cfg.public_base_url or "").strip():
+            origin = cfg.public_base_url.strip().rstrip("/")
+    if not origin:
+        origin = _browser_public_origin(request)
+    return public_api_base(fallback_origin=origin or None)

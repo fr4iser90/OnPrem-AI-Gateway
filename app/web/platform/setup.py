@@ -7,7 +7,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from ...audit import write_audit
-from ...config import KINDS, onprem_api_port, public_api_base
+from ...config import KINDS, onprem_api_port
 from ...data.backends import get_source_by_name, source_chip_rows, source_names
 from ...data.db import generate_api_key, get_db, hash_api_key, key_display_prefix
 from ...data.models import WebUser, ApiKey
@@ -326,7 +326,7 @@ def setup_key_page(
 ):
     import os
 
-    from ...config import onprem_api_port, public_api_base
+    from ...config import onprem_api_port
     from ...data.grants import (
         AccessCeiling,
         catalog_groups_for_ceiling,
@@ -335,6 +335,7 @@ def setup_key_page(
     from ...vision_route import group_models_vl_pairs
     from ..accounts import get_auth_settings
     from ..setup import wizard_progress
+    from ..shared import api_base_for_ui
 
     wiz = wizard_progress(db)
     if not wiz["has_sources"]:
@@ -374,7 +375,7 @@ def setup_key_page(
             "catalog_groups": catalog_groups,
             "catalog_vl_groups": catalog_vl_groups,
             "api_port": gw_port,
-            "api_base": public_api_base(api_port=gw_port),
+            "api_base": api_base_for_ui(request, db),
             "flash_ok": request.session.pop("flash_ok", None),
             "flash_err": request.session.pop("flash_err", None),
             "is_admin": True,
