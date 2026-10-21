@@ -333,17 +333,8 @@ def create_app() -> FastAPI:
         """Claude Code / Anthropic clients probe this path on the API host."""
         return {"ok": True, "service": "onprem-auth"}
 
-    @app.get("/api/sse-selftest")
-    async def api_sse_selftest(seconds: float = 30.0):
-        """Emit Anthropic-shaped SSE pings for N seconds (no upstream).
-
-        Use through the public host to verify Traefik/nginx flush::
-
-            curl -N https://ai.example.com/api/sse-selftest?seconds=20
-
-        If timestamps jump in ~2s steps, flush works. If everything arrives
-        only at the end, a proxy is buffering and Claude Code will idle-abort.
-        """
+    async def _sse_selftest_response(seconds: float = 30.0):
+        """Emit Anthropic-shaped SSE pings for N seconds (no upstream)."""
         import asyncio
         import time as time_mod
 
@@ -374,8 +365,19 @@ def create_app() -> FastAPI:
             headers={
                 "cache-control": "no-cache",
                 "x-accel-buffering": "no",
+                "x-onprem-dialect": "anthropic-sse-selftest",
             },
         )
+
+    @app.get("/api/sse-selftest")
+    async def api_sse_selftest(seconds: float = 30.0):
+        """Traefik → auth (no nginx). Compare with /v1/onprem/sse-selftest."""
+        return await _sse_selftest_response(seconds)
+
+    @app.get("/v1/onprem/sse-selftest")
+    async def onprem_sse_selftest(seconds: float = 30.0):
+        """Same pings via Traefik → nginx → auth (Claude's /v1 path)."""
+        return await _sse_selftest_response(seconds)
 
     @app.get("/v1/models")
     @app.get("/v1/onprem/models")
@@ -704,7 +706,6 @@ def create_app() -> FastAPI:
                 samples.append(float(w))
                 power_status = "metered"
 
-        await _sample()
         t0 = time_mod.perf_counter()
         # Cap total/read wait at max hold when set; otherwise long streams OK.
         if hold_sec > 0:
@@ -713,6 +714,10 @@ def create_app() -> FastAPI:
             client_timeout = httpx.Timeout(3600.0, connect=10.0)
 
         early_anthropic_sse = bool(anthropic_client and anthropic_stream)
+        # Anthropic SSE must return StreamingResponse with zero awaits first —
+        # even a short probe delay postpones the first client byte.
+        if not early_anthropic_sse:
+            await _sample()
 
         def _finalize(
             *,
@@ -753,10 +758,17 @@ def create_app() -> FastAPI:
                 db.close()
 
         if early_anthropic_sse:
+            import logging
+
+            logging.getLogger("uvicorn.error").info(
+                "anthropic_sse early start model=%s",
+                (anthropic_model or "")[:80],
+            )
             sse_headers = {
                 "content-type": "text/event-stream",
                 "cache-control": "no-cache",
                 "x-accel-buffering": "no",
+                "x-onprem-dialect": "anthropic-sse",
             }
 
             async def _stream_early():
@@ -1149,7 +1161,15 @@ def create_app() -> FastAPI:
         body = await request.body()
 
         # Anthropic Messages client dialect: translate before aliases/VL/auth.
-        anthropic_client = is_anthropic_messages_path(uri)
+        # nginx rewrites to /v1/onprem/entry — prefer X-Original-URI; also accept
+        # anthropic-version (Claude Code always sends it) so we never miss SSE pings.
+        anthropic_client = is_anthropic_messages_path(uri) or (
+            bool(request.headers.get("anthropic-version"))
+            and (
+                is_anthropic_messages_path(request.url.path)
+                or str(request.url.path).rstrip("/").endswith("/entry")
+            )
+        )
         anthropic_model: str | None = None
         anthropic_stream = False
         if anthropic_client:
