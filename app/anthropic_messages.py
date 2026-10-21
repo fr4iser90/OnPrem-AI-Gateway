@@ -1,8 +1,11 @@
 """Anthropic Messages client dialect → OpenAI chat.completions upstream.
 
-Clients may POST /v1/messages (Anthropic shape). The gateway translates to
-OpenAI for local backends, meters on the OpenAI response, then translates back.
-Supports text, images, tools / tool_use / tool_result, and streaming.
+Full client-facing Anthropic Messages compatibility for gateways (Claude Code,
+SDKs, etc.): accept mid-conversation ``role: system``, tools, vision, streaming,
+and ignore Anthropic-only extras (``thinking``, ``cache_control``, betas) that
+local OpenAI/llama.cpp upstreams do not understand — never 400 on them.
+
+Translate request → OpenAI, meter on OpenAI upstream, translate response back.
 """
 
 from __future__ import annotations
@@ -117,22 +120,38 @@ def _anthropic_tools_to_openai(tools: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for i, tool in enumerate(tools):
         if not isinstance(tool, dict):
-            raise AnthropicTranslateError(f"tools[{i}] must be an object")
+            continue  # skip junk; don't 400 whole request
+        ttype = str(tool.get("type") or "").strip().lower()
+        # Server / beta tool types Claude Code may send — skip for local upstreams
+        if ttype and ttype not in {"", "function", "custom"} and not tool.get("name"):
+            continue
+        if ttype.startswith("advisor") or "tool_reference" in ttype:
+            continue
         # Already OpenAI-shaped
-        if str(tool.get("type") or "").lower() == "function" and isinstance(
-            tool.get("function"), dict
-        ):
-            out.append(tool)
+        if ttype == "function" and isinstance(tool.get("function"), dict):
+            fn_in = tool["function"]
+            out.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": str(fn_in.get("name") or f"tool_{i}"),
+                        "description": fn_in.get("description") or "",
+                        "parameters": fn_in.get("parameters")
+                        if isinstance(fn_in.get("parameters"), dict)
+                        else {"type": "object", "properties": {}},
+                    },
+                }
+            )
             continue
         name = tool.get("name")
         if not isinstance(name, str) or not name.strip():
-            raise AnthropicTranslateError(f"tools[{i}].name is required")
+            continue
         desc = tool.get("description")
         schema = tool.get("input_schema")
         if schema is None:
             schema = tool.get("parameters") or {"type": "object", "properties": {}}
         if not isinstance(schema, dict):
-            raise AnthropicTranslateError(f"tools[{i}].input_schema must be an object")
+            schema = {"type": "object", "properties": {}}
         fn: dict[str, Any] = {
             "name": name.strip(),
             "parameters": schema,
@@ -152,9 +171,9 @@ def _anthropic_tool_choice_to_openai(choice: Any) -> Any:
             return c
         if c == "any":
             return "required"
-        raise AnthropicTranslateError(f"unsupported tool_choice string '{choice}'")
+        return "auto"  # unknown string → don't 400
     if not isinstance(choice, dict):
-        raise AnthropicTranslateError("tool_choice must be a string or object")
+        return "auto"
     ct = str(choice.get("type") or "").strip().lower()
     if ct == "auto":
         return "auto"
@@ -164,10 +183,10 @@ def _anthropic_tool_choice_to_openai(choice: Any) -> Any:
         return "none"
     if ct == "tool":
         name = choice.get("name")
-        if not isinstance(name, str) or not name.strip():
-            raise AnthropicTranslateError("tool_choice.type=tool requires name")
-        return {"type": "function", "function": {"name": name.strip()}}
-    raise AnthropicTranslateError(f"unsupported tool_choice.type '{ct}'")
+        if isinstance(name, str) and name.strip():
+            return {"type": "function", "function": {"name": name.strip()}}
+        return "auto"
+    return "auto"
 
 
 def _message_to_openai_messages(role: str, content: Any) -> list[dict[str, Any]]:
@@ -243,15 +262,45 @@ def _message_to_openai_messages(role: str, content: Any) -> list[dict[str, Any]]
                 }
             )
         elif bt in {"thinking", "redacted_thinking"}:
-            # Drop thinking blocks from history (OpenAI upstreams ignore them).
-            continue
+            # Keep thinking text in history as plain text so context isn't lost.
+            tx = block.get("thinking") or block.get("text")
+            if isinstance(tx, str) and tx.strip():
+                text_only.append(tx)
+                text_parts.append({"type": "text", "text": tx})
+        elif bt in {"document", "file"}:
+            # Best-effort: flatten document text / title into text content.
+            title = block.get("title")
+            if isinstance(title, str) and title.strip():
+                text_only.append(f"[document: {title.strip()}]")
+                text_parts.append(
+                    {"type": "text", "text": f"[document: {title.strip()}]"}
+                )
+            src = block.get("source") if isinstance(block.get("source"), dict) else {}
+            if str(src.get("type") or "") == "text" and isinstance(src.get("data"), str):
+                text_only.append(src["data"])
+                text_parts.append({"type": "text", "text": src["data"]})
         else:
-            tx = block.get("text")
-            if isinstance(tx, str):
+            # Unknown block: keep any text; never 400 the whole request.
+            tx = block.get("text") or block.get("thinking")
+            if isinstance(tx, str) and tx:
                 text_only.append(tx)
                 text_parts.append({"type": "text", "text": tx})
 
     out: list[dict[str, Any]] = []
+
+    if role == "system":
+        # Mid-conversation system (Claude Code / newer Anthropic) → OpenAI system.
+        text = "".join(text_only) if not has_media else ""
+        if has_media and text_parts:
+            # Flatten multimodal system to text for upstreams that reject arrays.
+            bits = []
+            for p in text_parts:
+                if isinstance(p, dict) and p.get("type") == "text":
+                    bits.append(str(p.get("text") or ""))
+            text = "".join(bits)
+        if text.strip() or not tool_results:
+            out.append({"role": "system", "content": text})
+        return out
 
     if role == "assistant":
         msg: dict[str, Any] = {"role": "assistant"}
@@ -309,14 +358,22 @@ def anthropic_request_to_openai(body: bytes) -> tuple[bytes, bool]:
 
     for msg in messages_in:
         if not isinstance(msg, dict):
-            raise AnthropicTranslateError("each message must be an object")
+            continue
         role = str(msg.get("role") or "").strip().lower()
-        if role not in {"user", "assistant"}:
-            raise AnthropicTranslateError(
-                f"unsupported message role '{role}' "
-                "(use user/assistant; system is top-level)"
-            )
-        out_messages.extend(_message_to_openai_messages(role, msg.get("content")))
+        # Claude Code / newer Anthropic: mid-conversation role=system in messages[].
+        # Also accept empty system entries (effort markers) without 400.
+        if role not in {"user", "assistant", "system"}:
+            # Unknown roles: treat like user text so clients don't hard-fail.
+            role = "user"
+        content = msg.get("content")
+        # Empty system messages (Claude Code effort markers) → skip
+        if role == "system" and (
+            content is None
+            or content == ""
+            or (isinstance(content, list) and len(content) == 0)
+        ):
+            continue
+        out_messages.extend(_message_to_openai_messages(role, content))
 
     max_tokens = data.get("max_tokens")
     if max_tokens is None:
@@ -325,8 +382,11 @@ def anthropic_request_to_openai(body: bytes) -> tuple[bytes, bool]:
         max_tokens_i = int(max_tokens)
     except (TypeError, ValueError) as exc:
         raise AnthropicTranslateError("max_tokens must be an integer") from exc
-    if max_tokens_i < 1:
-        raise AnthropicTranslateError("max_tokens must be >= 1")
+    # Anthropic allows 0 (cache warm); OpenAI upstreams need >= 1 for generation.
+    if max_tokens_i < 0:
+        raise AnthropicTranslateError("max_tokens must be >= 0")
+    if max_tokens_i == 0:
+        max_tokens_i = 1
 
     stream = bool(data.get("stream") or False)
     openai: dict[str, Any] = {
@@ -347,13 +407,22 @@ def anthropic_request_to_openai(body: bytes) -> tuple[bytes, bool]:
 
     tools = data.get("tools")
     if tools is not None:
-        openai["tools"] = _anthropic_tools_to_openai(tools)
+        mapped = _anthropic_tools_to_openai(tools)
+        if mapped:
+            openai["tools"] = mapped
     if "tool_choice" in data and data["tool_choice"] is not None:
         openai["tool_choice"] = _anthropic_tool_choice_to_openai(data["tool_choice"])
+
+    # Anthropic-only body fields (thinking, cache_control, output_config,
+    # context_management, metadata, …) are intentionally dropped — local
+    # OpenAI/llama.cpp upstreams reject them with 400.
 
     if stream:
         # Ask OpenAI-shaped upstreams for usage on the final chunk when supported.
         openai["stream_options"] = {"include_usage": True}
+
+    if not out_messages:
+        raise AnthropicTranslateError("messages must contain at least one usable turn")
 
     return json.dumps(openai, ensure_ascii=False).encode("utf-8"), stream
 

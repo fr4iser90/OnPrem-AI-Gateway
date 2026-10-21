@@ -64,6 +64,46 @@ def test_request_text_and_system():
     assert data["messages"][1] == {"role": "user", "content": "Hi"}
 
 
+def test_request_system_role_inside_messages():
+    """Claude Code / mid-conversation system — must not 400."""
+    raw = json.dumps(
+        {
+            "model": "local-alias",
+            "max_tokens": 256,
+            "thinking": {"type": "adaptive"},
+            "metadata": {"user_id": "x"},
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+                {"role": "system", "content": "Stay concise."},
+                {"role": "user", "content": "again"},
+            ],
+        }
+    ).encode()
+    out, _ = anthropic_request_to_openai(raw)
+    msgs = json.loads(out)["messages"]
+    assert msgs[0] == {"role": "user", "content": "hi"}
+    assert msgs[1] == {"role": "assistant", "content": "hello"}
+    assert msgs[2] == {"role": "system", "content": "Stay concise."}
+    assert msgs[3] == {"role": "user", "content": "again"}
+    assert "thinking" not in json.loads(out)
+
+
+def test_request_empty_system_message_skipped():
+    raw = json.dumps(
+        {
+            "model": "x",
+            "max_tokens": 10,
+            "messages": [
+                {"role": "system", "content": []},
+                {"role": "user", "content": "hi"},
+            ],
+        }
+    ).encode()
+    msgs = json.loads(anthropic_request_to_openai(raw)[0])["messages"]
+    assert msgs == [{"role": "user", "content": "hi"}]
+
+
 def test_request_default_max_tokens_and_image():
     raw = json.dumps(
         {

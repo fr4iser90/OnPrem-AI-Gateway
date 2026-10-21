@@ -133,7 +133,9 @@ In OpenAI-compatible apps (Continue, OpenCode, custom SDKs, …):
 - **Base URL:** `http://localhost:9081/v1` (or your public `https://…/v1`)  
 - **API key:** the key from the UI  
 
-Anthropic SDKs: same host + key as `x-api-key`, path `/v1/messages` (incl. tools / tool_use).
+Anthropic / Claude Code: `ANTHROPIC_BASE_URL` → gateway host, key as `x-api-key`,
+`POST /v1/messages` (system top-level **or** in `messages`, tools, vision, stream).
+Anthropic-only fields (`thinking`, `cache_control`, …) are dropped for local upstreams.
 
 ---
 
