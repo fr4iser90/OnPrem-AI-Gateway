@@ -1096,14 +1096,12 @@ def create_app() -> FastAPI:
             media_type=media_type,
         )
 
-    @app.api_route("/v1/messages", methods=["POST", "PUT", "PATCH"])
     @app.api_route("/v1/onprem/entry", methods=["POST", "PUT", "PATCH"])
     async def onprem_entry(request: Request, db: Session = Depends(get_db)):
         """Auth + upstream proxy in one hop (avoids nginx auth_request body hang).
 
         Used for chat (and optionally embed) so duration/Wh metering works.
-        ``/v1/messages`` is also mounted here so Traefik can route Anthropic
-        SSE straight to uvicorn (skip nginx buffering).
+        Anthropic clients hit nginx ``/v1/messages`` → this entry.
         """
         settings = request.app.state.settings
         host = request.headers.get("x-original-host") or request.headers.get("host") or ""
