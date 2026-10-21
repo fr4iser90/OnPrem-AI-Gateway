@@ -652,6 +652,7 @@ def create_app() -> FastAPI:
         anthropic_client: bool = False,
         anthropic_model: str | None = None,
         anthropic_stream: bool = False,
+        pre_upstream=None,
     ):
         """Shared streaming proxy + per-source GPU sample → finalize UsageEvent.
 
@@ -665,6 +666,11 @@ def create_app() -> FastAPI:
         Anthropic SSE: return HTTP 200 + event-stream **before** waiting on
         upstream headers, and emit pings while llama.cpp is still connecting /
         queueing — otherwise Claude Code idle-aborts (multi-minute retry).
+
+        pre_upstream: optional async () -> str | None run inside the SSE
+        generator (after first pings). Used to defer source admission / preflight
+        so a 30s GPU queue wait still emits keepalive bytes. Return an error
+        message to end the stream; None continues to upstream.
         """
         import asyncio
         import time as time_mod
@@ -785,6 +791,30 @@ def create_app() -> FastAPI:
                     for piece in xform.bootstrap():
                         yield piece
                     yield anthropic_sse_ping()
+
+                    # Admission/preflight may block up to ~30s — ping while waiting
+                    # or Claude Code idle-aborts at ~20s before we ever reach upstream.
+                    if pre_upstream is not None:
+                        gate_task = asyncio.create_task(pre_upstream())
+                        while not gate_task.done():
+                            done, _ = await asyncio.wait(
+                                {gate_task},
+                                timeout=ANTHROPIC_SSE_PING_INTERVAL_SEC,
+                            )
+                            if not done:
+                                yield anthropic_sse_ping()
+                                now = time_mod.perf_counter()
+                                if probe and (now - last_sample) >= 1.0:
+                                    await _sample()
+                                    last_sample = now
+                        gate_err = gate_task.result()
+                        if gate_err:
+                            yield anthropic_sse_error(
+                                str(gate_err), err_type="api_error"
+                            )
+                            for piece in xform.flush():
+                                yield piece
+                            return
 
                     send_task = asyncio.create_task(
                         client.send(
@@ -1260,32 +1290,37 @@ def create_app() -> FastAPI:
             return _entry_err({"error": "backend_not_configured"}, 503)
 
         src_row = get_source_by_name(db, service)
-        pf_block = await _preflight_block_async(
-            auth_cfg=auth_cfg,
-            backend=backend,
-            kind=kind,
-            model=result.model,
-            service=service,
-            lease=result.concurrency_lease,
-            src=src_row,
-        )
-        pf_block = _maybe_anthropic_json(pf_block)
-        if pf_block is not None:
-            return pf_block
-        adm_block = await _source_admission_block_async(
-            auth_cfg=auth_cfg,
-            src=src_row,
-            backend=backend,
-            kind=kind,
-            model=result.model,
-            service=service,
-            lease=result.concurrency_lease,
-            priority=result.priority,
-        )
-        adm_block = _maybe_anthropic_json(adm_block)
-        if adm_block is not None:
-            return adm_block
         entry_lease = _attach_source_key(result.concurrency_lease, backend)
+        # Anthropic streaming: do NOT wait for admission/preflight before SSE.
+        # Default source_queue_timeout is 30s; Claude Code idle-aborts at ~20s
+        # with zero bytes — so gates run inside the pinging SSE generator.
+        defer_gates = bool(anthropic_client and anthropic_stream)
+        if not defer_gates:
+            pf_block = await _preflight_block_async(
+                auth_cfg=auth_cfg,
+                backend=backend,
+                kind=kind,
+                model=result.model,
+                service=service,
+                lease=result.concurrency_lease,
+                src=src_row,
+            )
+            pf_block = _maybe_anthropic_json(pf_block)
+            if pf_block is not None:
+                return pf_block
+            adm_block = await _source_admission_block_async(
+                auth_cfg=auth_cfg,
+                src=src_row,
+                backend=backend,
+                kind=kind,
+                model=result.model,
+                service=service,
+                lease=result.concurrency_lease,
+                priority=result.priority,
+            )
+            adm_block = _maybe_anthropic_json(adm_block)
+            if adm_block is not None:
+                return adm_block
         api_style = getattr(src_row, "api_style", None) if src_row is not None else None
         rewrite_uri = map_upstream_path(upstream_uri, kind=kind, api_style=api_style)
         final_model = vl_rewrite or auto_rewrite
@@ -1335,6 +1370,51 @@ def create_app() -> FastAPI:
 
         from .usage_pool import probe_url_for_source
 
+        async def _pre_upstream_gates() -> str | None:
+            """Run deferred preflight+admission; return error text or None."""
+            pf_block = await _preflight_block_async(
+                auth_cfg=auth_cfg,
+                backend=backend,
+                kind=kind,
+                model=result.model,
+                service=service,
+                lease=result.concurrency_lease,
+                src=src_row,
+            )
+            if pf_block is not None:
+                try:
+                    data = json.loads(
+                        pf_block.body.decode("utf-8") if pf_block.body else b"{}"
+                    )
+                except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+                    data = {}
+                if not isinstance(data, dict):
+                    data = {}
+                return str(data.get("error") or data.get("detail") or "preflight_failed")
+            adm_block = await _source_admission_block_async(
+                auth_cfg=auth_cfg,
+                src=src_row,
+                backend=backend,
+                kind=kind,
+                model=result.model,
+                service=service,
+                lease=result.concurrency_lease,
+                priority=result.priority,
+            )
+            if adm_block is not None:
+                try:
+                    data = json.loads(
+                        adm_block.body.decode("utf-8") if adm_block.body else b"{}"
+                    )
+                except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+                    data = {}
+                if not isinstance(data, dict):
+                    data = {}
+                return str(
+                    data.get("error") or data.get("detail") or "admission_failed"
+                )
+            return None
+
         return await _stream_upstream_metered(
             method=method,
             url=url,
@@ -1349,6 +1429,7 @@ def create_app() -> FastAPI:
             or final_model
             or result.model,
             anthropic_stream=anthropic_stream,
+            pre_upstream=_pre_upstream_gates if defer_gates else None,
         )
 
     @app.api_route("/v1/onprem/forward", methods=["POST", "PUT", "PATCH"])
