@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Anthropic Messages client dialect: `POST /v1/messages` (Claude Code compatible — mid-conversation `role: system`, tools, vision, stream; Anthropic-only fields like `thinking` dropped for local upstreams)
+- Anthropic SSE `ping` keepalive during upstream silence (thinking/prefill) so Claude Code does not idle-retry
 
 ## [0.1.0] — 2026-08-20
 

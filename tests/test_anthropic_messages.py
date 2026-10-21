@@ -7,8 +7,10 @@ import json
 import pytest
 
 from app.anthropic_messages import (
+    ANTHROPIC_SSE_PING_INTERVAL_SEC,
     OpenAIToAnthropicStream,
     anthropic_request_to_openai,
+    anthropic_sse_ping,
     is_anthropic_messages_path,
     openai_response_to_anthropic,
 )
@@ -28,6 +30,14 @@ from app.config import kind_from_upstream_path, map_upstream_path
 )
 def test_is_anthropic_messages_path(path: str, expected: bool):
     assert is_anthropic_messages_path(path) is expected
+
+
+def test_anthropic_sse_ping_format():
+    ping = anthropic_sse_ping()
+    assert ping.startswith(b"event: ping\n")
+    assert b'"type": "ping"' in ping
+    assert ping.endswith(b"\n\n")
+    assert ANTHROPIC_SSE_PING_INTERVAL_SEC <= 15.0
 
 
 def test_kind_and_path_map_for_messages():

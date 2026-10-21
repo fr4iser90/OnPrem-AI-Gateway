@@ -38,10 +38,12 @@ from .config import (
 )
 from .data.db import get_db, init_db
 from .anthropic_messages import (
+    ANTHROPIC_SSE_PING_INTERVAL_SEC,
     AnthropicTranslateError,
     OpenAIToAnthropicStream,
     anthropic_error_body,
     anthropic_request_to_openai,
+    anthropic_sse_ping,
     is_anthropic_messages_path,
 )
 from .vision_route import (
@@ -715,33 +717,68 @@ def create_app() -> FastAPI:
                 if anthropic_client
                 else None
             )
+            # Claude Code aborts when no bytes arrive during long thinking/prefill.
+            # Anthropic sends SSE pings; local llama.cpp often does not — emit them.
+            use_pings = bool(
+                xform is not None
+                and media_type
+                and "event-stream" in str(media_type).lower()
+            )
 
             async def _kill_after_hold() -> None:
                 await asyncio.sleep(hold_sec)
                 with suppress(Exception):
                     await upstream.aclose()
 
-            if hold_sec > 0:
-                watchdog = asyncio.create_task(_kill_after_hold())
-            try:
-                async for chunk in upstream.aiter_raw():
-                    now = time_mod.perf_counter()
-                    if probe and (now - last_sample) >= 1.0:
-                        await _sample()
-                        last_sample = now
-                    if not truncated:
-                        if len(buf) + len(chunk) <= _BUF_MAX:
-                            buf.extend(chunk)
-                        else:
-                            # Keep a tail window for SSE usage/timings.
-                            buf.extend(chunk)
-                            if len(buf) > _BUF_TAIL:
-                                del buf[: len(buf) - _BUF_TAIL]
-                                truncated = True
+            def _meter_chunk(chunk: bytes) -> None:
+                nonlocal truncated
+                if not truncated:
+                    if len(buf) + len(chunk) <= _BUF_MAX:
+                        buf.extend(chunk)
                     else:
                         buf.extend(chunk)
                         if len(buf) > _BUF_TAIL:
                             del buf[: len(buf) - _BUF_TAIL]
+                            truncated = True
+                else:
+                    buf.extend(chunk)
+                    if len(buf) > _BUF_TAIL:
+                        del buf[: len(buf) - _BUF_TAIL]
+
+            if hold_sec > 0:
+                watchdog = asyncio.create_task(_kill_after_hold())
+            pending: asyncio.Task | None = None
+            try:
+                if use_pings:
+                    # Immediate keepalive so idle timers don't start on a dead silence.
+                    yield anthropic_sse_ping()
+                aiter = upstream.aiter_raw().__aiter__()
+                while True:
+                    if pending is None:
+                        pending = asyncio.ensure_future(aiter.__anext__())
+                    wait_timeout = (
+                        ANTHROPIC_SSE_PING_INTERVAL_SEC if use_pings else None
+                    )
+                    done, _ = await asyncio.wait({pending}, timeout=wait_timeout)
+                    if not done:
+                        # Upstream silent (thinking / prefill) — keep Claude Code alive.
+                        yield anthropic_sse_ping()
+                        now = time_mod.perf_counter()
+                        if probe and (now - last_sample) >= 1.0:
+                            await _sample()
+                            last_sample = now
+                        continue
+                    try:
+                        chunk = pending.result()
+                    except StopAsyncIteration:
+                        pending = None
+                        break
+                    pending = None
+                    now = time_mod.perf_counter()
+                    if probe and (now - last_sample) >= 1.0:
+                        await _sample()
+                        last_sample = now
+                    _meter_chunk(chunk)
                     if xform is None:
                         yield chunk
                     else:
@@ -751,6 +788,10 @@ def create_app() -> FastAPI:
                     for piece in xform.flush():
                         yield piece
             finally:
+                if pending is not None and not pending.done():
+                    pending.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await pending
                 if watchdog is not None:
                     watchdog.cancel()
                     with suppress(asyncio.CancelledError):

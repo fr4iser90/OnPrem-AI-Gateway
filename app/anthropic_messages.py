@@ -39,6 +39,18 @@ def anthropic_error_body(message: str, *, err_type: str = "api_error") -> dict[s
     return {"type": "error", "error": {"type": err_type, "message": message}}
 
 
+# Anthropic Messages SSE keepalive (Claude Code stream idle watchdog).
+# Emit while local upstreams are silent (thinking / prefill).
+ANTHROPIC_SSE_PING = b'event: ping\ndata: {"type": "ping"}\n\n'
+# Stay under typical ~20s client idle thresholds; 10s leaves headroom.
+ANTHROPIC_SSE_PING_INTERVAL_SEC = 10.0
+
+
+def anthropic_sse_ping() -> bytes:
+    """One Anthropic-compatible SSE ping frame."""
+    return ANTHROPIC_SSE_PING
+
+
 def _msg_id() -> str:
     return f"msg_{uuid.uuid4().hex}"
 
