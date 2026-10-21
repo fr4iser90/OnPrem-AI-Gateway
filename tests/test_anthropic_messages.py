@@ -37,7 +37,33 @@ def test_anthropic_sse_ping_format():
     assert ping.startswith(b"event: ping\n")
     assert b'"type": "ping"' in ping
     assert ping.endswith(b"\n\n")
-    assert ANTHROPIC_SSE_PING_INTERVAL_SEC <= 15.0
+    assert 0 < ANTHROPIC_SSE_PING_INTERVAL_SEC <= 5.0
+
+
+def test_stream_bootstrap_emits_message_start_once():
+    xform = OpenAIToAnthropicStream(model="m1")
+    first = b"".join(xform.bootstrap())
+    assert b"event: message_start" in first
+    assert b'"model": "m1"' in first
+    # Second bootstrap must be a no-op (already started).
+    assert xform.bootstrap() == []
+    # Later feed must not duplicate message_start.
+    chunk = (
+        b'data: {"id":"1","object":"chat.completion.chunk","model":"m1",'
+        b'"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}\n\n'
+    )
+    joined = b"".join(xform.feed(chunk))
+    assert b"event: message_start" not in joined
+    assert b"text_delta" in joined
+
+
+def test_stream_bootstrap_then_empty_flush_has_content_block():
+    xform = OpenAIToAnthropicStream(model="m1")
+    assert b"message_start" in b"".join(xform.bootstrap())
+    closed = b"".join(xform.flush())
+    assert b"content_block_start" in closed
+    assert b"content_block_stop" in closed
+    assert b"message_stop" in closed
 
 
 def test_kind_and_path_map_for_messages():

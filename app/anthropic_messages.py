@@ -42,8 +42,8 @@ def anthropic_error_body(message: str, *, err_type: str = "api_error") -> dict[s
 # Anthropic Messages SSE keepalive (Claude Code stream idle watchdog).
 # Emit while local upstreams are silent (thinking / prefill).
 ANTHROPIC_SSE_PING = b'event: ping\ndata: {"type": "ping"}\n\n'
-# Stay under typical ~20s client idle thresholds; 10s leaves headroom.
-ANTHROPIC_SSE_PING_INTERVAL_SEC = 10.0
+# Stay under Claude Code / proxy idle timers; 5s leaves headroom under ~20–30s.
+ANTHROPIC_SSE_PING_INTERVAL_SEC = 5.0
 
 
 def anthropic_sse_ping() -> bytes:
@@ -608,6 +608,17 @@ class OpenAIToAnthropicStream:
         self._done = False
         self._saw_bytes = False
 
+    def bootstrap(self) -> list[bytes]:
+        """Emit ``message_start`` before the first upstream token.
+
+        Claude Code and similar clients treat prolonged silence after HTTP 200
+        headers as a dead stream. Starting the Anthropic envelope immediately
+        (then SSE pings) keeps idle timers reset during llama.cpp prefill.
+        """
+        if self._done:
+            return []
+        return self._ensure_message_start()
+
     def feed(self, chunk: bytes) -> list[bytes]:
         if self._done:
             return []
@@ -884,7 +895,9 @@ class OpenAIToAnthropicStream:
         out: list[bytes] = []
         if not self._started:
             out.extend(self._ensure_message_start())
-            # Empty completion: emit an empty text block for a valid Anthropic message.
+        # Empty / aborted completion (incl. after bootstrap()): Anthropic clients
+        # expect at least one content block before message_delta/stop.
+        if not self._text_open and not self._tool_open and self._text_index is None:
             out.extend(self._ensure_text_block())
         out.extend(self._close_text_block())
         for aidx in sorted(self._tool_open):

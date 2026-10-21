@@ -68,6 +68,9 @@ services:
       - traefik.http.routers.onprem-api.tls=true
       - traefik.http.routers.onprem-api.tls.certresolver=http_resolver
       - traefik.http.services.onprem-api.loadbalancer.server.port=80
+      # Flush SSE (Anthropic pings / token deltas) immediately — default buffering
+      # makes Claude Code idle-abort during long local prefill/thinking.
+      - traefik.http.services.onprem-api.loadbalancer.responseforwarding.flushinterval=1ms
       - traefik.http.routers.onprem-api-http.rule=Host(`${PUBLIC_SUBDOMAIN:-ai}.${DOMAIN}`) && PathPrefix(`/v1`)
       - traefik.http.routers.onprem-api-http.entrypoints=web
       - traefik.http.routers.onprem-api-http.middlewares=onprem-https-redirect

@@ -243,6 +243,7 @@ def create_app() -> FastAPI:
             "/privacy",
             "/privacy/wipe-usage",
             "/healthz",
+            "/api/hello",
         }
     )
 
@@ -324,6 +325,11 @@ def create_app() -> FastAPI:
         from . import __version__
 
         return {"status": "ok", "version": __version__}
+
+    @app.api_route("/api/hello", methods=["GET", "HEAD"])
+    async def api_hello():
+        """Claude Code / Anthropic clients probe this path on the API host."""
+        return {"ok": True, "service": "onprem-auth"}
 
     @app.get("/v1/models")
     @app.get("/v1/onprem/models")
@@ -703,6 +709,9 @@ def create_app() -> FastAPI:
             if use_sse and upstream_status < 400:
                 media_type = "text/event-stream"
                 out_headers["content-type"] = "text/event-stream"
+                # Defeat nginx/Traefik/browser buffering so SSE pings flush.
+                out_headers["cache-control"] = "no-cache"
+                out_headers["x-accel-buffering"] = "no"
             else:
                 media_type = "application/json"
                 out_headers["content-type"] = "application/json"
@@ -749,8 +758,11 @@ def create_app() -> FastAPI:
                 watchdog = asyncio.create_task(_kill_after_hold())
             pending: asyncio.Task | None = None
             try:
-                if use_pings:
-                    # Immediate keepalive so idle timers don't start on a dead silence.
+                if use_pings and xform is not None:
+                    # message_start + ping before first upstream byte — Claude Code
+                    # otherwise idle-aborts during long llama.cpp prefill/thinking.
+                    for piece in xform.bootstrap():
+                        yield piece
                     yield anthropic_sse_ping()
                 aiter = upstream.aiter_raw().__aiter__()
                 while True:
@@ -787,6 +799,13 @@ def create_app() -> FastAPI:
                 if xform is not None:
                     for piece in xform.flush():
                         yield piece
+            except Exception:
+                # Close Anthropic envelope if we already sent message_start/pings.
+                if xform is not None:
+                    with suppress(Exception):
+                        for piece in xform.flush():
+                            yield piece
+                raise
             finally:
                 if pending is not None and not pending.done():
                     pending.cancel()
