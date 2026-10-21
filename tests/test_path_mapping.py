@@ -15,6 +15,7 @@ def test_map_piper_and_whisper():
     assert map_upstream_path("/v1/audio/translations", kind="stt") == "/inference"
     assert map_upstream_path("/v1/chat/completions", kind="chat") == "/v1/chat/completions"
     assert map_upstream_path("/v1/extract", kind="extractor") == "/v1/chat/completions"
+    assert map_upstream_path("/v1/messages", kind="chat") == "/v1/chat/completions"
 
 
 def test_openai_style_keeps_paths():

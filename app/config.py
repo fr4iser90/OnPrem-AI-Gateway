@@ -111,6 +111,8 @@ def kind_from_upstream_path(upstream: str) -> str | None:
         return "stt"
     if p.startswith("/v1/audio/speech"):
         return "tts"
+    if p.startswith("/v1/messages"):
+        return "chat"
     if (
         p.startswith("/v1/chat/completions")
         or p.startswith("/v1/completions")

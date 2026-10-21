@@ -1,0 +1,181 @@
+"""Anthropic Messages client dialect: request/response/stream translation."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from app.anthropic_messages import (
+    AnthropicTranslateError,
+    OpenAIToAnthropicStream,
+    anthropic_request_to_openai,
+    is_anthropic_messages_path,
+    openai_response_to_anthropic,
+)
+from app.config import kind_from_upstream_path, map_upstream_path
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("/v1/messages", True),
+        ("/v1/messages/", True),
+        ("/v1/messages?x=1", True),
+        ("/s/gpu1/v1/messages", True),
+        ("/v1/chat/completions", False),
+        ("/v1/models", False),
+    ],
+)
+def test_is_anthropic_messages_path(path: str, expected: bool):
+    assert is_anthropic_messages_path(path) is expected
+
+
+def test_kind_and_path_map_for_messages():
+    assert kind_from_upstream_path("/v1/messages") == "chat"
+    assert (
+        map_upstream_path("/v1/messages", kind="chat", api_style="openai")
+        == "/v1/chat/completions"
+    )
+    assert (
+        map_upstream_path("/v1/messages", kind="chat", api_style="auto")
+        == "/v1/chat/completions"
+    )
+
+
+def test_request_text_and_system():
+    raw = json.dumps(
+        {
+            "model": "qwen-test",
+            "max_tokens": 128,
+            "system": "Be brief.",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "temperature": 0.2,
+            "stop_sequences": ["END"],
+        }
+    ).encode()
+    out, stream = anthropic_request_to_openai(raw)
+    assert stream is False
+    data = json.loads(out)
+    assert data["model"] == "qwen-test"
+    assert data["max_tokens"] == 128
+    assert data["temperature"] == 0.2
+    assert data["stop"] == ["END"]
+    assert data["messages"][0] == {"role": "system", "content": "Be brief."}
+    assert data["messages"][1] == {"role": "user", "content": "Hi"}
+
+
+def test_request_default_max_tokens_and_image():
+    raw = json.dumps(
+        {
+            "model": "vl",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what?"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "aaa",
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+    ).encode()
+    out, stream = anthropic_request_to_openai(raw)
+    assert stream is False
+    data = json.loads(out)
+    assert data["max_tokens"] == 4096
+    content = data["messages"][0]["content"]
+    assert isinstance(content, list)
+    assert content[0] == {"type": "text", "text": "what?"}
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,aaa")
+
+
+def test_request_rejects_tools():
+    raw = json.dumps(
+        {
+            "model": "x",
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"name": "t"}],
+        }
+    ).encode()
+    with pytest.raises(AnthropicTranslateError, match="tools"):
+        anthropic_request_to_openai(raw)
+
+
+def test_response_roundtrip_shape():
+    openai = {
+        "id": "chatcmpl-1",
+        "model": "qwen-test",
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "Hello!"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+    }
+    out = json.loads(openai_response_to_anthropic(json.dumps(openai).encode()))
+    assert out["type"] == "message"
+    assert out["role"] == "assistant"
+    assert out["content"] == [{"type": "text", "text": "Hello!"}]
+    assert out["stop_reason"] == "end_turn"
+    assert out["usage"] == {"input_tokens": 3, "output_tokens": 2}
+    assert out["model"] == "qwen-test"
+    assert out["id"].startswith("msg_")
+
+
+def test_openai_string_error_to_anthropic():
+    raw = json.dumps(
+        {"error": "upstream_unreachable", "detail": "connection refused"}
+    ).encode()
+    out = json.loads(openai_response_to_anthropic(raw))
+    assert out["type"] == "error"
+    assert "upstream_unreachable" in out["error"]["message"]
+    assert "connection refused" in out["error"]["message"]
+
+
+def test_stream_utf8_split_safe():
+    """Multi-byte UTF-8 must survive chunk boundaries."""
+    xform = OpenAIToAnthropicStream(model="m1")
+    # "é" is C3 A9 — split after C3
+    prefix = b'data: {"choices":[{"delta":{"content":"'
+    mid = "caf\u00e9".encode("utf-8")
+    suffix = b'"},"finish_reason":null}]}\n\n'
+    assert mid[3:4] == b"\xc3"
+    events = b"".join(xform.feed(prefix + mid[:4]))  # ends mid codepoint
+    events += b"".join(xform.feed(mid[4:] + suffix))
+    events += b"".join(xform.feed(b"data: [DONE]\n\n"))
+    events += b"".join(xform.flush())
+    assert "caf\u00e9" in events.decode("utf-8")
+
+
+def test_stream_openai_to_anthropic_events():
+    xform = OpenAIToAnthropicStream(model="m1")
+    chunks = [
+        b'data: {"id":"c1","model":"m1","choices":[{"delta":{"content":"He"},"finish_reason":null}]}\n\n',
+        b'data: {"choices":[{"delta":{"content":"llo"},"finish_reason":null}]}\n\n',
+        b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+    events: list[str] = []
+    for c in chunks:
+        for piece in xform.feed(c):
+            events.append(piece.decode())
+    for piece in xform.flush():
+        events.append(piece.decode())
+    joined = "".join(events)
+    assert "event: message_start" in joined
+    assert "event: content_block_delta" in joined
+    assert '"text": "He"' in joined
+    assert '"text": "llo"' in joined
+    assert "event: message_stop" in joined
+    assert "end_turn" in joined

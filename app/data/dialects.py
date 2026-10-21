@@ -1,7 +1,9 @@
-"""Upstream API dialects: OpenAI client paths → backend-native paths.
+"""Upstream API dialects: client paths → backend-native paths.
 
-Clients always call OpenAI-style routes (/v1/…). The DB stores ``api_style`` per
-source; this registry defines how (and if) paths are rewritten for nginx.
+Clients normally call OpenAI-style routes (/v1/…). Anthropic Messages
+(/v1/messages) is rewritten to chat completions after body translation in
+``onprem_entry``. The DB stores ``api_style`` per source; this registry defines
+how (and if) paths are rewritten for nginx.
 Add a new dialect here when you wire a backend with a different path shape.
 """
 
@@ -28,10 +30,13 @@ DIALECTS: dict[str, ApiDialect] = {
     "openai": ApiDialect(
         id="openai",
         label="OpenAI / llama.cpp",
-        summary="Same /v1/… paths as the client (llama.cpp server, Ollama OpenAI API, most embeds). Extractor rewrites to chat completions.",
+        summary="Same /v1/… paths as the client (llama.cpp server, Ollama OpenAI API, most embeds). Extractor and Anthropic Messages rewrite to chat completions.",
         kinds=("chat", "embed", "extractor", "stt", "tts"),
-        path_map=(("/v1/extract", "/v1/chat/completions"),),
-        examples="/v1/chat/completions, /v1/embeddings; /v1/extract → /v1/chat/completions",
+        path_map=(
+            ("/v1/extract", "/v1/chat/completions"),
+            ("/v1/messages", "/v1/chat/completions"),
+        ),
+        examples="/v1/chat/completions, /v1/embeddings; /v1/extract|/v1/messages → /v1/chat/completions",
     ),
     "piper": ApiDialect(
         id="piper",

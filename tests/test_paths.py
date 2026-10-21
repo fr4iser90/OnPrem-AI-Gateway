@@ -26,6 +26,7 @@ def test_source_name_slug():
     "path,expected_kind",
     [
         ("/v1/chat/completions", "chat"),
+        ("/v1/messages", "chat"),
         ("/v1/completions", "chat"),
         ("/v1/models", "chat"),
         ("/api/chat", "chat"),

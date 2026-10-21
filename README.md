@@ -118,10 +118,22 @@ curl -s http://localhost:9081/v1/chat/completions \
   -d '{"model":"YOUR_MODEL_ID","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
+Anthropic Messages (`POST /v1/messages`) uses the same key and models; the gateway translates to OpenAI upstream:
+
+```bash
+curl -s http://localhost:9081/v1/messages \
+  -H "X-Api-Key: YOUR_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"YOUR_MODEL_ID","max_tokens":256,"messages":[{"role":"user","content":"Hello"}]}'
+```
+
 In OpenAI-compatible apps (Continue, OpenCode, custom SDKs, …):
 
 - **Base URL:** `http://localhost:9081/v1` (or your public `https://…/v1`)  
 - **API key:** the key from the UI  
+
+Anthropic SDKs: same host + key as `x-api-key`, path `/v1/messages` (tools not supported yet).
 
 ---
 
@@ -147,6 +159,7 @@ Same product; only how you reach it changes. See `.env.example` for cookie/HTTPS
 |------|---------|
 | `GET /v1/models` | Chat (+ embed + extractor) this key may see. STT/TTS use `/v1/audio/*` (not listed by default; `?kinds=all` opt-in) |
 | `/v1/chat/completions` (and related chat paths) | Chat — routed by `model` |
+| `/v1/messages` | Anthropic Messages dialect (translated to chat completions upstream) |
 | `/v1/embeddings` | Embeddings — routed by `model` |
 | `/v1/extract` | Schema extract (Knowledge-Build) — chat-completions upstream, own source pool |
 | `/v1/audio/transcriptions` | Speech → text (STT) |

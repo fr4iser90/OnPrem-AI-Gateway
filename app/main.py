@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 
 import httpx
@@ -36,6 +37,13 @@ from .config import (
     upstream_path_for_proxy,
 )
 from .data.db import get_db, init_db
+from .anthropic_messages import (
+    AnthropicTranslateError,
+    OpenAIToAnthropicStream,
+    anthropic_error_body,
+    anthropic_request_to_openai,
+    is_anthropic_messages_path,
+)
 from .vision_route import (
     mint_forward_ticket,
     parse_forward_ticket,
@@ -587,11 +595,18 @@ def create_app() -> FastAPI:
         probe_url: str = "",
         concurrency_lease: ConcurrencyLease | None = None,
         max_hold_sec: int = 0,
+        anthropic_client: bool = False,
+        anthropic_model: str | None = None,
+        anthropic_stream: bool = False,
     ):
         """Shared streaming proxy + per-source GPU sample → finalize UsageEvent.
 
         max_hold_sec > 0: wall-clock kill of the upstream stream, then finally
         releases the admission/concurrency lease (no silent slot steal).
+
+        anthropic_client: translate OpenAI upstream bytes → Anthropic Messages
+        for the client; metering still parses the OpenAI buffer.
+        anthropic_stream: client asked for SSE (prefer event-stream CT).
         """
         import asyncio
         import time as time_mod
@@ -659,14 +674,16 @@ def create_app() -> FastAPI:
                     )
                 finally:
                     db.close()
-            return JSONResponse(
-                {
-                    "error": "upstream_unreachable",
-                    "detail": str(exc),
-                    "retryable": False,
-                },
-                status_code=502,
-            )
+            err_body: dict = {
+                "error": "upstream_unreachable",
+                "detail": str(exc),
+                "retryable": False,
+            }
+            if anthropic_client:
+                err_body = anthropic_error_body(
+                    f"upstream_unreachable: {exc}", err_type="api_error"
+                )
+            return JSONResponse(err_body, status_code=502)
 
         out_headers = {
             k: v
@@ -676,12 +693,28 @@ def create_app() -> FastAPI:
         }
         upstream_status = upstream.status_code
         content_type = upstream.headers.get("content-type")
+        media_type = content_type
+        if anthropic_client:
+            ct_l = (content_type or "").lower()
+            use_sse = anthropic_stream or ("text/event-stream" in ct_l)
+            # Errors stay JSON even when the client asked for a stream.
+            if use_sse and upstream_status < 400:
+                media_type = "text/event-stream"
+                out_headers["content-type"] = "text/event-stream"
+            else:
+                media_type = "application/json"
+                out_headers["content-type"] = "application/json"
 
         async def _stream():
             last_sample = time_mod.perf_counter()
             buf = bytearray()
             truncated = False
             watchdog: asyncio.Task | None = None
+            xform = (
+                OpenAIToAnthropicStream(model=anthropic_model)
+                if anthropic_client
+                else None
+            )
 
             async def _kill_after_hold() -> None:
                 await asyncio.sleep(hold_sec)
@@ -709,7 +742,14 @@ def create_app() -> FastAPI:
                         buf.extend(chunk)
                         if len(buf) > _BUF_TAIL:
                             del buf[: len(buf) - _BUF_TAIL]
-                    yield chunk
+                    if xform is None:
+                        yield chunk
+                    else:
+                        for piece in xform.feed(chunk):
+                            yield piece
+                if xform is not None:
+                    for piece in xform.flush():
+                        yield piece
             finally:
                 if watchdog is not None:
                     watchdog.cancel()
@@ -753,7 +793,7 @@ def create_app() -> FastAPI:
             _stream(),
             status_code=upstream.status_code,
             headers=out_headers,
-            media_type=upstream.headers.get("content-type"),
+            media_type=media_type,
         )
 
     @app.api_route("/v1/onprem/entry", methods=["POST", "PUT", "PATCH"])
@@ -777,6 +817,53 @@ def create_app() -> FastAPI:
         content_type = request.headers.get("content-type")
         body = await request.body()
 
+        # Anthropic Messages client dialect: translate before aliases/VL/auth.
+        anthropic_client = is_anthropic_messages_path(uri)
+        anthropic_model: str | None = None
+        anthropic_stream = False
+        if anthropic_client:
+            if not body:
+                return JSONResponse(
+                    anthropic_error_body(
+                        "request body is required",
+                        err_type="invalid_request_error",
+                    ),
+                    status_code=400,
+                )
+            try:
+                body, anthropic_stream = anthropic_request_to_openai(body)
+                content_type = "application/json"
+                anthropic_model = extract_model(body, content_type)
+            except AnthropicTranslateError as exc:
+                return JSONResponse(
+                    anthropic_error_body(str(exc), err_type=exc.err_type),
+                    status_code=400,
+                )
+
+        def _entry_err(payload: dict, status: int) -> JSONResponse:
+            if anthropic_client:
+                msg = str(payload.get("error") or payload.get("detail") or "error")
+                return JSONResponse(
+                    anthropic_error_body(msg, err_type="api_error"),
+                    status_code=status,
+                )
+            return JSONResponse(payload, status_code=status)
+
+        def _maybe_anthropic_json(resp: JSONResponse | None) -> JSONResponse | None:
+            if resp is None or not anthropic_client:
+                return resp
+            try:
+                data = json.loads(resp.body.decode("utf-8") if resp.body else b"{}")
+            except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            msg = str(data.get("error") or data.get("detail") or "error")
+            return JSONResponse(
+                anthropic_error_body(msg, err_type="api_error"),
+                status_code=resp.status_code,
+            )
+
         named, upstream_uri = split_source_path(uri)
         auth_cfg = get_auth_settings(db)
         auto_rewrite: str | None = None
@@ -784,9 +871,9 @@ def create_app() -> FastAPI:
         if named is not None:
             src = get_source_by_name(db, named)
             if src is None:
-                return JSONResponse(
+                return _entry_err(
                     {"error": "unknown_source", "source": named},
-                    status_code=403,
+                    403,
                 )
             service = src.name
             kind = src.kind
@@ -800,7 +887,7 @@ def create_app() -> FastAPI:
             upstream_uri = upstream_path_for_proxy(uri)
             kind = kind_from_upstream_path(upstream_uri)
             if kind is None:
-                return JSONResponse({"error": "unknown_route", "path": uri}, status_code=403)
+                return _entry_err({"error": "unknown_route", "path": uri}, 403)
             if kind == "chat" and body:
                 asked = extract_model(body, content_type)
                 body, auto_rewrite, alias_pref = apply_client_model_rewrites(
@@ -816,6 +903,20 @@ def create_app() -> FastAPI:
                 preferred_source=alias_pref,
             )
             if src is None:
+                if anthropic_client:
+                    if not (model or "").strip():
+                        return JSONResponse(
+                            anthropic_error_body(
+                                "model is required", err_type="invalid_request_error"
+                            ),
+                            status_code=400,
+                        )
+                    return JSONResponse(
+                        anthropic_error_body(
+                            f"unknown_model: {model}", err_type="not_found_error"
+                        ),
+                        status_code=404,
+                    )
                 return _unresolved_model_response(kind, model)
             service = src.name
 
@@ -847,15 +948,15 @@ def create_app() -> FastAPI:
         )
         if result.status != 204:
             release_concurrency_lease(result.concurrency_lease)
-            return JSONResponse(
+            return _entry_err(
                 {"error": result.reason, "service": service},
-                status_code=result.status,
+                result.status,
             )
 
         backend = address_for_source(db, service)
         if not backend:
             release_concurrency_lease(result.concurrency_lease)
-            return JSONResponse({"error": "backend_not_configured"}, status_code=503)
+            return _entry_err({"error": "backend_not_configured"}, 503)
 
         src_row = get_source_by_name(db, service)
         pf_block = await _preflight_block_async(
@@ -867,6 +968,7 @@ def create_app() -> FastAPI:
             lease=result.concurrency_lease,
             src=src_row,
         )
+        pf_block = _maybe_anthropic_json(pf_block)
         if pf_block is not None:
             return pf_block
         adm_block = await _source_admission_block_async(
@@ -879,6 +981,7 @@ def create_app() -> FastAPI:
             lease=result.concurrency_lease,
             priority=result.priority,
         )
+        adm_block = _maybe_anthropic_json(adm_block)
         if adm_block is not None:
             return adm_block
         entry_lease = _attach_source_key(result.concurrency_lease, backend)
@@ -917,6 +1020,10 @@ def create_app() -> FastAPI:
             "transfer-encoding",
             "x-onprem-ticket",
             "x-onprem-proxy",
+            # Anthropic client headers — not for OpenAI/llama.cpp upstreams
+            "anthropic-version",
+            "anthropic-beta",
+            "anthropic-dangerous-direct-browser-access",
         }
         up_headers = {
             k: v for k, v in request.headers.items() if k.lower() not in hop
@@ -935,6 +1042,11 @@ def create_app() -> FastAPI:
             probe_url=probe_url_for_source(src_row),
             concurrency_lease=entry_lease,
             max_hold_sec=int(getattr(auth_cfg, "source_admission_max_hold_sec", 0) or 0),
+            anthropic_client=anthropic_client,
+            anthropic_model=anthropic_model
+            or final_model
+            or result.model,
+            anthropic_stream=anthropic_stream,
         )
 
     @app.api_route("/v1/onprem/forward", methods=["POST", "PUT", "PATCH"])
