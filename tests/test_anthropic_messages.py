@@ -39,8 +39,6 @@ def test_anthropic_sse_ping_format():
     assert b"event: ping\n" in ping
     assert b'"type": "ping"' in ping
     assert ping.endswith(b"\n\n")
-    # Padded ping *data* (not comment lines) for proxy flush + Claude event watchdog.
-    assert len(ping) >= 2048
     assert 0 < ANTHROPIC_SSE_PING_INTERVAL_SEC <= 2.0
 
 
@@ -56,24 +54,39 @@ def test_stream_bootstrap_emits_message_start_once():
     xform = OpenAIToAnthropicStream(model="m1")
     first = b"".join(xform.bootstrap())
     assert b"event: message_start" in first
+    assert b"content_block_start" in first
     assert b'"model": "m1"' in first
     # Second bootstrap must be a no-op (already started).
     assert xform.bootstrap() == []
-    # Later feed must not duplicate message_start.
+    # Later feed must not duplicate message_start / content_block_start.
     chunk = (
         b'data: {"id":"1","object":"chat.completion.chunk","model":"m1",'
         b'"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}\n\n'
     )
     joined = b"".join(xform.feed(chunk))
     assert b"event: message_start" not in joined
+    assert b"content_block_start" not in joined
     assert b"text_delta" in joined
+
+
+def test_empty_role_chunk_emits_nothing_after_bootstrap():
+    """llama.cpp first chunk is often role-only with empty content — no deltas."""
+    xform = OpenAIToAnthropicStream(model="chat")
+    assert b"message_start" in b"".join(xform.bootstrap())
+    chunk = (
+        b'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,'
+        b'"model":"chat","choices":[{"index":0,"delta":{"role":"assistant","content":""},'
+        b'"finish_reason":null}]}\n\n'
+    )
+    assert b"".join(xform.feed(chunk)) == b""
 
 
 def test_stream_bootstrap_then_empty_flush_has_content_block():
     xform = OpenAIToAnthropicStream(model="m1")
-    assert b"message_start" in b"".join(xform.bootstrap())
+    boot = b"".join(xform.bootstrap())
+    assert b"message_start" in boot
+    assert b"content_block_start" in boot
     closed = b"".join(xform.flush())
-    assert b"content_block_start" in closed
     assert b"content_block_stop" in closed
     assert b"message_stop" in closed
 

@@ -42,23 +42,17 @@ def anthropic_error_body(message: str, *, err_type: str = "api_error") -> dict[s
 # Anthropic Messages SSE keepalive (Claude Code stream idle watchdog).
 # Emit while local upstreams are silent (thinking / prefill).
 #
-# Claude Code resets its stream idle watchdog on real SSE *events*
-# (``event: ping``). Comment-only lines (``: …``) are ignored by the event
-# parser and do NOT clear "Waiting for API response". Pad the ping *data*
-# payload so intermediaries flush without sending multi-KiB comment lines
-# (those can trip line-length limits in proxies / parsers).
-_ANTHROPIC_SSE_PING_PAD = "x" * 2048
-ANTHROPIC_SSE_PING = (
-    "event: ping\n"
-    f'data: {{"type": "ping", "_pad": "{_ANTHROPIC_SSE_PING_PAD}"}}\n\n'
-).encode("utf-8")
+# Claude Code resets its idle watchdog on real SSE *events* (``event: ping``).
+# Comment-only lines help some byte-level proxies but are ignored by the
+# event parser — always pair them with a real ping frame.
+ANTHROPIC_SSE_PING = b'event: ping\ndata: {"type": "ping"}\n\n'
 ANTHROPIC_SSE_COMMENT_PING = b": keepalive\n\n"
 # Claude Code shows "Waiting for API response" after ~20s wire silence.
 ANTHROPIC_SSE_PING_INTERVAL_SEC = 0.75
 
 
 def anthropic_sse_ping() -> bytes:
-    """Keepalive: short SSE comment + Anthropic ``event: ping`` (padded data)."""
+    """Keepalive: SSE comment + Anthropic ``event: ping`` frame."""
     return ANTHROPIC_SSE_COMMENT_PING + ANTHROPIC_SSE_PING
 
 
@@ -630,15 +624,18 @@ class OpenAIToAnthropicStream:
         self._saw_bytes = False
 
     def bootstrap(self) -> list[bytes]:
-        """Emit ``message_start`` before the first upstream token.
+        """Emit ``message_start`` + empty text ``content_block_start`` immediately.
 
-        Claude Code and similar clients treat prolonged silence after HTTP 200
-        headers as a dead stream. Starting the Anthropic envelope immediately
-        (then SSE pings) keeps idle timers reset during llama.cpp prefill.
+        Claude Code treats prolonged silence after HTTP 200 as a dead stream.
+        llama.cpp often sends a role-only first chunk (``content: ""``) that
+        produces no Anthropic deltas — opening the text block up front gives
+        the client a real parsed event before prefill finishes.
         """
         if self._done:
             return []
-        return self._ensure_message_start()
+        out = self._ensure_message_start()
+        out.extend(self._ensure_text_block())
+        return out
 
     def feed(self, chunk: bytes) -> list[bytes]:
         if self._done:

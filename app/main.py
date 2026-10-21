@@ -955,6 +955,10 @@ def create_app() -> FastAPI:
 
                     aiter = upstream.aiter_raw().__aiter__()
                     first_up = True
+                    # llama.cpp often dribbles empty role/content chunks during
+                    # prefill — feed() yields nothing, wait() never times out,
+                    # and Claude sees wire silence. Ping on wall-clock too.
+                    last_client_yield = time_mod.perf_counter()
                     while True:
                         if pending is None:
                             pending = asyncio.ensure_future(aiter.__anext__())
@@ -964,6 +968,7 @@ def create_app() -> FastAPI:
                         )
                         if not done:
                             yield anthropic_sse_ping()
+                            last_client_yield = time_mod.perf_counter()
                             now = time_mod.perf_counter()
                             if conn["probe"] and (now - last_sample) >= 1.0:
                                 await _sample()
@@ -986,8 +991,17 @@ def create_app() -> FastAPI:
                             await _sample()
                             last_sample = now
                         _meter_chunk(chunk)
-                        for piece in xform.feed(chunk):
-                            yield piece
+                        pieces = xform.feed(chunk)
+                        if pieces:
+                            for piece in pieces:
+                                yield piece
+                            last_client_yield = time_mod.perf_counter()
+                        elif (
+                            time_mod.perf_counter() - last_client_yield
+                            >= ANTHROPIC_SSE_PING_INTERVAL_SEC
+                        ):
+                            yield anthropic_sse_ping()
+                            last_client_yield = time_mod.perf_counter()
                     for piece in xform.flush():
                         yield piece
                     _sse_log.info(
