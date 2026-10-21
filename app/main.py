@@ -369,12 +369,12 @@ def create_app() -> FastAPI:
             },
         )
 
-    @app.get("/api/sse-selftest")
+    @app.api_route("/api/sse-selftest", methods=["GET", "POST"])
     async def api_sse_selftest(seconds: float = 30.0):
         """Traefik → auth (no nginx). Compare with /v1/onprem/sse-selftest."""
         return await _sse_selftest_response(seconds)
 
-    @app.get("/v1/onprem/sse-selftest")
+    @app.api_route("/v1/onprem/sse-selftest", methods=["GET", "POST"])
     async def onprem_sse_selftest(seconds: float = 30.0):
         """Same pings via Traefik → nginx → auth (Claude's /v1 path)."""
         return await _sse_selftest_response(seconds)

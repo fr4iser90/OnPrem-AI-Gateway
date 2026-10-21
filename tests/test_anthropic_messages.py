@@ -35,7 +35,8 @@ def test_is_anthropic_messages_path(path: str, expected: bool):
 
 def test_anthropic_sse_ping_format():
     ping = anthropic_sse_ping()
-    assert ping.startswith(b"event: ping\n")
+    assert b": keepalive\n\n" in ping
+    assert b"event: ping\n" in ping
     assert b'"type": "ping"' in ping
     assert ping.endswith(b"\n\n")
     assert 0 < ANTHROPIC_SSE_PING_INTERVAL_SEC <= 2.0
