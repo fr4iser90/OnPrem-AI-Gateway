@@ -245,6 +245,7 @@ def create_app() -> FastAPI:
             "/privacy/wipe-usage",
             "/healthz",
             "/api/hello",
+            "/api/sse-selftest",
         }
     )
 
@@ -331,6 +332,50 @@ def create_app() -> FastAPI:
     async def api_hello():
         """Claude Code / Anthropic clients probe this path on the API host."""
         return {"ok": True, "service": "onprem-auth"}
+
+    @app.get("/api/sse-selftest")
+    async def api_sse_selftest(seconds: float = 30.0):
+        """Emit Anthropic-shaped SSE pings for N seconds (no upstream).
+
+        Use through the public host to verify Traefik/nginx flush::
+
+            curl -N https://ai.example.com/api/sse-selftest?seconds=20
+
+        If timestamps jump in ~2s steps, flush works. If everything arrives
+        only at the end, a proxy is buffering and Claude Code will idle-abort.
+        """
+        import asyncio
+        import time as time_mod
+
+        from .anthropic_messages import (
+            ANTHROPIC_SSE_PING_INTERVAL_SEC,
+            OpenAIToAnthropicStream,
+            anthropic_sse_ping,
+        )
+
+        dur = max(1.0, min(float(seconds or 30.0), 120.0))
+
+        async def _gen():
+            xform = OpenAIToAnthropicStream(model="sse-selftest")
+            for piece in xform.bootstrap():
+                yield piece
+            yield anthropic_sse_ping()
+            t0 = time_mod.perf_counter()
+            while (time_mod.perf_counter() - t0) < dur:
+                await asyncio.sleep(ANTHROPIC_SSE_PING_INTERVAL_SEC)
+                yield anthropic_sse_ping()
+            for piece in xform.flush():
+                yield piece
+
+        return StreamingResponse(
+            _gen(),
+            status_code=200,
+            media_type="text/event-stream",
+            headers={
+                "cache-control": "no-cache",
+                "x-accel-buffering": "no",
+            },
+        )
 
     @app.get("/v1/models")
     @app.get("/v1/onprem/models")
@@ -1051,11 +1096,14 @@ def create_app() -> FastAPI:
             media_type=media_type,
         )
 
+    @app.api_route("/v1/messages", methods=["POST", "PUT", "PATCH"])
     @app.api_route("/v1/onprem/entry", methods=["POST", "PUT", "PATCH"])
     async def onprem_entry(request: Request, db: Session = Depends(get_db)):
         """Auth + upstream proxy in one hop (avoids nginx auth_request body hang).
 
         Used for chat (and optionally embed) so duration/Wh metering works.
+        ``/v1/messages`` is also mounted here so Traefik can route Anthropic
+        SSE straight to uvicorn (skip nginx buffering).
         """
         settings = request.app.state.settings
         host = request.headers.get("x-original-host") or request.headers.get("host") or ""

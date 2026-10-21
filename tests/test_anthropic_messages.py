@@ -38,7 +38,7 @@ def test_anthropic_sse_ping_format():
     assert ping.startswith(b"event: ping\n")
     assert b'"type": "ping"' in ping
     assert ping.endswith(b"\n\n")
-    assert 0 < ANTHROPIC_SSE_PING_INTERVAL_SEC <= 5.0
+    assert 0 < ANTHROPIC_SSE_PING_INTERVAL_SEC <= 2.0
 
 
 def test_anthropic_sse_error_format():

@@ -42,10 +42,26 @@ services:
       - traefik.http.routers.onprem-admin.tls=true
       - traefik.http.routers.onprem-admin.tls.certresolver=http_resolver
       - traefik.http.services.onprem-admin.loadbalancer.server.port=8080
+      - traefik.http.services.onprem-admin.loadbalancer.responseforwarding.flushinterval=1ms
       - traefik.http.routers.onprem-admin-http.rule=Host(`${PUBLIC_SUBDOMAIN:-ai}.${DOMAIN}`)
       - traefik.http.routers.onprem-admin-http.entrypoints=web
       - traefik.http.routers.onprem-admin-http.middlewares=onprem-https-redirect
       - traefik.http.middlewares.onprem-https-redirect.redirectscheme.scheme=https
+      # Anthropic Messages SSE: skip nginx — uvicorn → Traefik with immediate flush.
+      # Higher priority than PathPrefix(`/v1`) on onprem-api.
+      - traefik.http.routers.onprem-messages.rule=Host(`${PUBLIC_SUBDOMAIN:-ai}.${DOMAIN}`) && PathPrefix(`/v1/messages`)
+      - traefik.http.routers.onprem-messages.entrypoints=websecure
+      - traefik.http.routers.onprem-messages.tls=true
+      - traefik.http.routers.onprem-messages.tls.certresolver=http_resolver
+      - traefik.http.routers.onprem-messages.priority=200
+      - traefik.http.routers.onprem-messages.service=onprem-messages
+      - traefik.http.services.onprem-messages.loadbalancer.server.port=8080
+      - traefik.http.services.onprem-messages.loadbalancer.responseforwarding.flushinterval=1ms
+      - traefik.http.routers.onprem-messages-http.rule=Host(`${PUBLIC_SUBDOMAIN:-ai}.${DOMAIN}`) && PathPrefix(`/v1/messages`)
+      - traefik.http.routers.onprem-messages-http.entrypoints=web
+      - traefik.http.routers.onprem-messages-http.priority=200
+      - traefik.http.routers.onprem-messages-http.middlewares=onprem-https-redirect
+      - traefik.http.routers.onprem-messages-http.service=onprem-messages
 
   onprem-api:
     <<: [*restart, *proxy-net]
