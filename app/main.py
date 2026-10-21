@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.requests import ClientDisconnect
 
 from .web.session import Forbidden, RedirectToLogin, SetupWizardRequired, current_user
 from .web.accounts import get_auth_settings, router as accounts_router
@@ -64,6 +65,14 @@ def _unresolved_model_response(kind: str, model: str | None) -> JSONResponse:
         {"error": "unknown_model", "kind": kind, "model": model},
         status_code=404,
     )
+
+
+async def _request_body_or_disconnect(request: Request) -> bytes | None:
+    """Read body; return None when the client aborts mid-upload (no ASGI traceback)."""
+    try:
+        return await request.body()
+    except ClientDisconnect:
+        return None
 
 
 def _lease_from_ticket(payload: dict) -> ConcurrencyLease | None:
@@ -452,7 +461,9 @@ def create_app() -> FastAPI:
             kind = src.kind
             upstream_uri = upstream_uri or "/"
             if kind in MODEL_ROUTE_KINDS and method_u in {"POST", "PUT", "PATCH"}:
-                body = await request.body()
+                body = await _request_body_or_disconnect(request)
+                if body is None:
+                    return Response(status_code=499)
             if kind == "chat" and body:
                 asked = extract_model(body, content_type)
                 body, rewritten, _pref = apply_client_model_rewrites(
@@ -470,7 +481,9 @@ def create_app() -> FastAPI:
                 )
             # Read body early so model routing can pick the source
             if kind in MODEL_ROUTE_KINDS and method_u in {"POST", "PUT", "PATCH"}:
-                body = await request.body()
+                body = await _request_body_or_disconnect(request)
+                if body is None:
+                    return Response(status_code=499)
             alias_pref: str | None = None
             if kind == "chat" and body:
                 asked = extract_model(body, content_type)
@@ -1247,7 +1260,9 @@ def create_app() -> FastAPI:
             if auth_h.lower().startswith("bearer "):
                 raw_key = auth_h[7:].strip()
         content_type = request.headers.get("content-type")
-        body = await request.body()
+        body = await _request_body_or_disconnect(request)
+        if body is None:
+            return Response(status_code=499)
 
         # Anthropic Messages client dialect: translate before aliases/VL/auth.
         # nginx rewrites to /v1/onprem/entry — prefer X-Original-URI; also accept
